@@ -8,6 +8,9 @@
 import SwiftUI
 
 enum DexterIdentity {
+    static let windowMinWidth: CGFloat = 640
+    static let sidebarExpandedWidth: CGFloat = 240
+
     static let accent = Color(hex: "#22D3EE")
     static let accentSecondary = Color(hex: "#38BDF8")
     static let accentSubtle = Color(hex: "#22D3EE").opacity(0.12)

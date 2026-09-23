@@ -30,7 +30,8 @@ struct leanring_buddyApp: App {
 @MainActor
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarPanelManager: MenuBarPanelManager?
-    private let companionManager = CompanionManager()
+    let companionManager = CompanionManager()
+    private let dexterMainWindowManager = DexterMainWindowManager()
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -45,6 +46,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         DexterAnalytics.configure()
         DexterAnalytics.trackAppOpened()
 
+        dexterMainWindowManager.install(companionManager: companionManager)
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()
         // Auto-open the panel if the user still needs to do something:

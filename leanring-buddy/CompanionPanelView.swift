@@ -9,6 +9,6 @@ struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
 
     var body: some View {
-        DexterCompanionPanelContent(companionManager: companionManager)
+        DexterMenuBarPanelContent(companionManager: companionManager)
     }
 }

@@ -121,6 +121,25 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var dexterWorkflowContextSummary: String?
     @Published private(set) var panelLastActionSummary: String?
 
+    @Published private(set) var dexterChatMessages: [DexterChatMessage] = []
+    @Published private(set) var dexterRecentConversations: [DexterRecentConversationSummary] = []
+    @Published private(set) var dexterChatErrorMessage: String?
+    var pendingMainWindowDestination: DexterMainWindowDestination = .chat
+
+    var isDexterScreenContextAvailable: Bool {
+        hasScreenRecordingPermission && hasAccessibilityPermission && hasScreenContentPermission
+    }
+
+    var selectedModelDisplayName: String {
+        if selectedModel.localizedCaseInsensitiveContains("opus") {
+            return "Claude Opus"
+        }
+        if selectedModel.localizedCaseInsensitiveContains("sonnet") {
+            return "Claude Sonnet"
+        }
+        return selectedModel
+    }
+
     var panelLastTypedAction: DexterAction? {
         dexterOrchestrator.lastTypedAction
     }
@@ -160,9 +179,117 @@ final class CompanionManager: ObservableObject {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedMessage.isEmpty else { return }
         lastTranscript = trimmedMessage
+        appendDexterUserChatMessage(trimmedMessage)
         DexterAnalytics.trackUserMessageSent(transcript: trimmedMessage)
         sendUserMessageToDexter(trimmedMessage, source: .typedText)
     }
+
+    func startNewDexterConversation() {
+        archiveCurrentDexterConversationIfNeeded()
+        clearDexterSessionMemory()
+        dexterChatMessages = []
+        dexterChatErrorMessage = nil
+        dexterVoiceCoordinator.resetStreamingResponseText()
+    }
+
+    func openRecentDexterConversation(_ conversation: DexterRecentConversationSummary) {
+        guard let archivedMessages = loadArchivedDexterConversationMessages(conversationId: conversation.id) else {
+            return
+        }
+        dexterChatMessages = archivedMessages
+        dexterChatErrorMessage = nil
+    }
+
+    func requestAccessibilityPermissionFromPanel() {
+        _ = WindowPositionManager.requestAccessibilityPermission()
+        refreshAllPermissions()
+    }
+
+    func requestScreenRecordingPermissionFromPanel() {
+        _ = WindowPositionManager.requestScreenRecordingPermission()
+        refreshAllPermissions()
+    }
+
+    func beginPushToTalkFromVoiceControl() {
+        beginPushToTalkSession(shouldDismissMenuBarPanel: false)
+    }
+
+    func endPushToTalkFromVoiceControl() {
+        endPushToTalkSession()
+    }
+
+    private func appendDexterUserChatMessage(_ text: String) {
+        dexterChatErrorMessage = nil
+        dexterChatMessages.append(DexterChatMessage(role: .user, text: text))
+    }
+
+    private func appendDexterAssistantChatMessage(_ text: String, isError: Bool = false) {
+        dexterChatMessages.append(
+            DexterChatMessage(role: .assistant, text: text, isError: isError)
+        )
+    }
+
+    private func archiveCurrentDexterConversationIfNeeded() {
+        guard !dexterChatMessages.isEmpty else { return }
+        guard let titleMessage = dexterChatMessages.first(where: { $0.role == .user }) else { return }
+
+        let conversationId = UUID()
+        let title = String(titleMessage.text.prefix(56))
+        let summary = DexterRecentConversationSummary(
+            id: conversationId,
+            title: title,
+            lastUpdated: Date()
+        )
+
+        saveArchivedDexterConversationMessages(conversationId: conversationId, messages: dexterChatMessages)
+
+        var updatedRecents = dexterRecentConversations.filter { $0.title != summary.title }
+        updatedRecents.insert(summary, at: 0)
+        dexterRecentConversations = Array(updatedRecents.prefix(8))
+        persistDexterRecentConversations()
+    }
+
+    private func persistDexterRecentConversations() {
+        guard let encoded = try? JSONEncoder().encode(dexterRecentConversations) else { return }
+        UserDefaults.standard.set(encoded, forKey: Self.dexterRecentConversationsUserDefaultsKey)
+    }
+
+    private func loadDexterRecentConversationsFromDisk() {
+        guard let data = UserDefaults.standard.data(forKey: Self.dexterRecentConversationsUserDefaultsKey),
+              let decoded = try? JSONDecoder().decode([DexterRecentConversationSummary].self, from: data) else {
+            return
+        }
+        dexterRecentConversations = decoded
+    }
+
+    private func saveArchivedDexterConversationMessages(conversationId: UUID, messages: [DexterChatMessage]) {
+        guard let encoded = try? JSONEncoder().encode(messages) else { return }
+        UserDefaults.standard.set(encoded, forKey: Self.archivedConversationUserDefaultsKeyPrefix + conversationId.uuidString)
+    }
+
+    private func loadArchivedDexterConversationMessages(conversationId: UUID) -> [DexterChatMessage]? {
+        guard let data = UserDefaults.standard.data(
+            forKey: Self.archivedConversationUserDefaultsKeyPrefix + conversationId.uuidString
+        ),
+              let decoded = try? JSONDecoder().decode([DexterChatMessage].self, from: data) else {
+            return nil
+        }
+        return decoded
+    }
+
+    private func rebuildDexterChatMessagesFromSessionMemory() {
+        let exchanges = dexterOrchestrator.memoryStore.recentExchanges(limit: 20)
+        guard !exchanges.isEmpty else { return }
+        dexterChatMessages = exchanges.flatMap { exchange in
+            [
+                DexterChatMessage(role: .user, text: exchange.userTranscript),
+                DexterChatMessage(role: .assistant, text: exchange.assistantResponse)
+            ]
+        }
+    }
+
+    private static let dexterRecentConversationsUserDefaultsKey = "dexterRecentConversationSummaries"
+    private static let archivedConversationUserDefaultsKeyPrefix = "dexterArchivedConversation."
 
     func refreshActionConfirmationPresentation() {
         actionConfirmationPresentation = dexterOrchestrator.actionConfirmationPresentation()
@@ -211,6 +338,8 @@ final class CompanionManager: ObservableObject {
             guard let outcome else { return }
             panelLastActionSummary = outcome.verificationReport?.summary ?? outcome.spokenSummary
             dexterVoiceCoordinator.recordAssistantResponse(outcome.spokenSummary)
+            appendDexterAssistantChatMessage(outcome.spokenSummary)
+            dexterVoiceCoordinator.resetStreamingResponseText()
             let spokenText = outcome.spokenSummary
             if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                dexterVoiceCoordinator.voiceSettings.isSpokenResponsesEnabled {
@@ -306,6 +435,8 @@ final class CompanionManager: ObservableObject {
         bindShortcutTransitions()
         // Eagerly warm up the model provider TLS handshake before onboarding interactions.
         dexterOrchestrator.warmUpModelConnectionIfNeeded()
+        loadDexterRecentConversationsFromDisk()
+        rebuildDexterChatMessagesFromSessionMemory()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -603,71 +734,72 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
-            guard dexterVoiceCoordinator.voiceSettings.isPushToTalkEnabled else { return }
-            guard !buddyDictationManager.isDictationInProgress else { return }
-            // Don't register push-to-talk while the onboarding video is playing
-            guard !showOnboardingVideo else { return }
-
-            // Cancel any pending transient hide so the overlay stays visible
-            transientHideTask?.cancel()
-            transientHideTask = nil
-
-            // If the cursor is hidden, bring it back transiently for this interaction
-            if !isDexterCursorEnabled && !isOverlayVisible {
-                overlayWindowManager.hasShownOverlayBefore = true
-                overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
-                isOverlayVisible = true
-            }
-
-            // Dismiss the menu bar panel so it doesn't cover the screen
-            NotificationCenter.default.post(name: .dexterDismissPanel, object: nil)
-
-            cancelActiveDexterVoiceInteraction()
-            clearDetectedElementLocation()
-
-            // Dismiss the onboarding prompt if it's showing
-            if showOnboardingPrompt {
-                withAnimation(.easeOut(duration: 0.3)) {
-                    onboardingPromptOpacity = 0.0
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    self.showOnboardingPrompt = false
-                    self.onboardingPromptText = ""
-                }
-            }
-    
-
-            DexterAnalytics.trackPushToTalkStarted()
-
-            pendingKeyboardShortcutStartTask?.cancel()
-            pendingKeyboardShortcutStartTask = Task {
-                await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
-                    currentDraftText: "",
-                    updateDraftText: { _ in
-                        // Partial transcripts are hidden (waveform-only UI)
-                    },
-                    submitDraftText: { [weak self] finalTranscript in
-                        self?.lastTranscript = finalTranscript
-                        #if DEBUG
-                        print("🗣️ Companion received transcript (\(finalTranscript.count) characters, redacted)")
-                        #endif
-                        DexterAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendUserMessageToDexter(finalTranscript, source: .pushToTalkTranscript)
-                    }
-                )
-            }
+            beginPushToTalkSession(shouldDismissMenuBarPanel: true)
         case .released:
-            // Cancel the pending start task in case the user released the shortcut
-            // before the async startPushToTalk had a chance to begin recording.
-            // Without this, a quick press-and-release drops the release event and
-            // leaves the waveform overlay stuck on screen indefinitely.
-            DexterAnalytics.trackPushToTalkReleased()
-            pendingKeyboardShortcutStartTask?.cancel()
-            pendingKeyboardShortcutStartTask = nil
-            buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
+            endPushToTalkSession()
         case .none:
             break
         }
+    }
+
+    private func beginPushToTalkSession(shouldDismissMenuBarPanel: Bool) {
+        guard dexterVoiceCoordinator.voiceSettings.isPushToTalkEnabled else { return }
+        guard !buddyDictationManager.isDictationInProgress else { return }
+        guard !showOnboardingVideo else { return }
+
+        transientHideTask?.cancel()
+        transientHideTask = nil
+
+        if !isDexterCursorEnabled && !isOverlayVisible {
+            overlayWindowManager.hasShownOverlayBefore = true
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        if shouldDismissMenuBarPanel {
+            NotificationCenter.default.post(name: .dexterDismissPanel, object: nil)
+        }
+
+        cancelActiveDexterVoiceInteraction()
+        clearDetectedElementLocation()
+
+        if showOnboardingPrompt {
+            withAnimation(.easeOut(duration: 0.3)) {
+                onboardingPromptOpacity = 0.0
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                self.showOnboardingPrompt = false
+                self.onboardingPromptText = ""
+            }
+        }
+
+        DexterAnalytics.trackPushToTalkStarted()
+
+        pendingKeyboardShortcutStartTask?.cancel()
+        pendingKeyboardShortcutStartTask = Task {
+            await buddyDictationManager.startPushToTalkFromKeyboardShortcut(
+                currentDraftText: "",
+                updateDraftText: { _ in
+                    // Partial transcripts are hidden (waveform-only UI)
+                },
+                submitDraftText: { [weak self] finalTranscript in
+                    self?.lastTranscript = finalTranscript
+                    self?.appendDexterUserChatMessage(finalTranscript)
+                    #if DEBUG
+                    print("🗣️ Dexter received transcript (\(finalTranscript.count) characters, redacted)")
+                    #endif
+                    DexterAnalytics.trackUserMessageSent(transcript: finalTranscript)
+                    self?.sendUserMessageToDexter(finalTranscript, source: .pushToTalkTranscript)
+                }
+            )
+        }
+    }
+
+    private func endPushToTalkSession() {
+        DexterAnalytics.trackPushToTalkReleased()
+        pendingKeyboardShortcutStartTask?.cancel()
+        pendingKeyboardShortcutStartTask = nil
+        buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
     }
 
     // MARK: - Dexter Voice response pipeline
@@ -708,6 +840,8 @@ final class CompanionManager: ObservableObject {
                 let parseResult = Self.parsePointingCoordinates(from: responseTextForDisplay)
                 let spokenText = parseResult.spokenText
                 dexterVoiceCoordinator.recordAssistantResponse(spokenText)
+                appendDexterAssistantChatMessage(spokenText)
+                dexterVoiceCoordinator.resetStreamingResponseText()
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
@@ -799,8 +933,10 @@ final class CompanionManager: ObservableObject {
                 print("⚠️ Companion response error: \(error)")
                 let userMessage = DexterUserFacingErrorMessage.forCompanionModelError(error)
                 if !userMessage.isEmpty {
+                    dexterChatErrorMessage = userMessage
                     dexterVoiceCoordinator.recordAssistantResponse(userMessage)
-                    dexterVoiceCoordinator.appendStreamingResponseChunk(userMessage)
+                    appendDexterAssistantChatMessage(userMessage, isError: true)
+                    dexterVoiceCoordinator.resetStreamingResponseText()
                     speakSystemVoiceLine(userMessage)
                 }
             }
