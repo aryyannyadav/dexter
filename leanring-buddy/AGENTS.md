@@ -1,28 +1,17 @@
-# AGENTS.md - leanring-buddy (Main App Target)
+# AGENTS.md - leanring-buddy (Dexter app target)
 
-## Source Files
+The macOS app product name is **Dexter** (`CFBundleDisplayName`). The Xcode target and module remain `leanring-buddy` / `leanring_buddy` for legacy compatibility.
 
-### FloatingSessionButton.swift
-- `FloatingSessionButtonManager` — `@MainActor` class managing the `NSPanel` lifecycle
-  - `showFloatingButton()` — Creates/shows the panel in top-right of primary screen
-  - `hideFloatingButton()` — Hides panel (keeps it alive for quick re-show)
-  - `destroyFloatingButton()` — Removes panel permanently (session ended)
-  - `onFloatingButtonClicked` — Callback closure, set by ContentView to bring main window to front
-  - `floatingButtonPanel` — Exposed `NSPanel` reference for screenshot exclusion
-- `FloatingButtonView` — Private SwiftUI view with gradient circle, scale+glow hover animation, pointer cursor
+## Entry
 
-### ContentView.swift
-- Receives `FloatingSessionButtonManager` via `@EnvironmentObject`
-- `isMainWindowCurrentlyFocused` — Tracks main window focus state
-- `configureFloatingButtonManager()` — Wires up the click callback
-- `startObservingMainWindowFocusChanges()` — Sets up `NSWindow` notification observers
-- `updateFloatingButtonVisibility()` — Core logic: show if running + not focused, hide otherwise
-- `bringMainWindowToFront()` — Activates app and orders main window front
+- `leanring_buddyApp.swift` — menu bar app entry; `CompanionAppDelegate` starts `MenuBarPanelManager` and `CompanionManager`.
 
-### ScreenshotManager.swift
-- `floatingButtonWindowToExcludeFromCaptures` — `NSWindow?` reference set by ContentView
-- `captureScreen()` — Matches the floating window to an `SCWindow` and excludes it from capture filter
+## Core files
 
-### leanring_buddyApp.swift
-- Owns `FloatingSessionButtonManager` as `@StateObject`
-- Injects it into ContentView via `.environmentObject()`
+- `CompanionManager.swift` — voice pipeline, permissions, Claude/TTS, overlay, onboarding
+- `MenuBarPanelManager.swift` / `CompanionPanelView.swift` — menu bar UI
+- `OverlayWindow.swift` — cursor overlay and pointing animations
+- `CompanionScreenCaptureUtility.swift` — ScreenCaptureKit captures
+- `BuddyDictationManager.swift` / `GlobalPushToTalkShortcutMonitor.swift` — push-to-talk
+
+See root `AGENTS.md` for full architecture.

@@ -1,0 +1,229 @@
+# DEXTER — MASTER ENGINEERING RULE
+
+You are transforming an existing macOS Swift/SwiftUI application into DEXTER.
+
+Dexter is an AI computer companion whose core loop is:
+
+SEE → UNDERSTAND → TEACH → PLAN → ACT → VERIFY → REMEMBER
+
+The existing application already contains valuable working functionality including:
+
+* macOS desktop/menu-bar application
+* screen capture
+* pointer/cursor overlay
+* voice input
+* transcription
+* AI vision/chat
+* streaming responses
+* text-to-speech
+* global interaction/hotkey infrastructure
+* overlays
+* application/window positioning
+
+REUSE working functionality.
+
+DO NOT rebuild working systems from scratch.
+
+---
+
+## PRODUCT
+
+Dexter should provide:
+
+* persistent desktop companion
+* global hotkey
+* screen awareness
+* pointer/attention awareness
+* active application/window awareness
+* natural language interaction
+* voice input/output
+* contextual explanations
+* teaching mode
+* computer actions
+* action permissions
+* action verification
+* session memory
+* persistent memory
+* task/workflow awareness
+* agentic execution
+* model-provider abstraction
+* original Dexter UI
+* architecture suitable for future expansion
+
+---
+
+## ARCHITECTURE
+
+DEXTER owns:
+
+* UX
+* context
+* intent
+* memory
+* teaching
+* permissions
+* verification
+* personalization
+* orchestration
+
+MODEL PROVIDERS own:
+
+* reasoning
+* generation
+
+AGENT RUNTIME owns:
+
+* computer/browser/tool execution
+
+The agent runtime must be behind an abstraction:
+
+DexterOrchestrator
+→ AgentRuntime
+→ OpenClaw adapter
+
+Do not couple the entire application directly to OpenClaw.
+
+---
+
+## EXISTING CODE
+
+Before changing existing functionality:
+
+1. Inspect the implementation.
+2. Understand its callers.
+3. Preserve working behavior.
+4. Extend rather than rewrite whenever practical.
+
+Existing useful systems should be reused, including:
+
+* screen capture
+* pointer overlay
+* voice/transcription
+* TTS
+* AI streaming
+* menu-bar behavior
+* window management
+
+---
+
+## SAFETY
+
+NEVER:
+
+* invent APIs
+* invent OpenClaw APIs
+* claim an untested feature works
+* hardcode API keys
+* expose secrets in the application
+* bypass macOS permissions
+* add unrestricted destructive computer execution
+* silently delete user data
+* perform unrelated refactors
+* rewrite the entire project
+* introduce unnecessary dependencies
+* remove working functionality without explicit reason
+
+---
+
+## COMPUTER ACTIONS
+
+All computer actions must follow:
+
+DexterOrchestrator
+→ PermissionManager
+→ AgentRuntime
+→ ActionVerifier
+
+Risky actions require explicit user confirmation.
+
+Never automatically retry destructive actions.
+
+---
+
+## VERIFICATION
+
+Never report an action as successful merely because the execution API says success.
+
+Prefer:
+
+EXECUTE
+→ OBSERVE
+→ VERIFY
+→ REPORT
+
+If verification is unavailable, report uncertainty.
+
+---
+
+## CONTEXT
+
+DexterContext may contain:
+
+* screenshot
+* pointer position
+* active application
+* active window
+* selected text
+* relevant clipboard context
+* recent conversation
+* recent actions
+* current task
+
+Do not continuously capture sensitive information unnecessarily.
+
+Collect context when needed.
+
+---
+
+## MEMORY
+
+Do not automatically store everything.
+
+Persistent memory should be created primarily through:
+
+* explicit user requests
+* intentional preferences
+* necessary task/workflow state
+
+Users should eventually be able to inspect and remove stored memories.
+
+---
+
+## DEVELOPMENT
+
+For every task:
+
+1. Inspect relevant code.
+2. Identify the minimal files required.
+3. Implement only the requested scope.
+4. Build the project.
+5. Run relevant tests.
+6. Fix errors caused by the change.
+7. Do not perform unrelated cleanup.
+
+Do not modify unrelated files merely because they could be improved.
+
+---
+
+## OPEN-SOURCE FOUNDATION
+
+The application is being transformed into Dexter.
+
+Remove inappropriate old product-facing branding, URLs, marketing text and assets.
+
+Preserve legally required copyright/license notices for inherited open-source code.
+
+Do not remove required third-party attribution.
+
+---
+
+## COMPLETION STANDARD
+
+Never say "done" unless:
+
+* implementation exists
+* project builds
+* relevant tests pass
+* requested behavior was tested
+* no obvious regression was introduced
+* no secrets were added
