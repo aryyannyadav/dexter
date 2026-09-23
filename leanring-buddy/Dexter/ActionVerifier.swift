@@ -5,37 +5,63 @@
 
 import Foundation
 
-enum ActionVerificationConfidence: Equatable {
-    case certain
-    case uncertain
-}
-
 struct ActionVerificationOutcome: Equatable {
-    let wasSuccessful: Bool
+    let status: DexterActionVerificationStatus
     let summary: String
-    let confidence: ActionVerificationConfidence
+    let report: DexterActionVerificationReport
+
+    var wasSuccessful: Bool {
+        status == .success
+    }
 }
 
-/// Observes and verifies whether an executed action achieved the intended effect.
+/// Observes fresh environment state and verifies intended vs actual outcomes.
 protocol ActionVerifier: AnyObject {
     func verify(
-        actionRequest: AgentActionRequest,
+        action: DexterAction,
         executionResult: AgentActionResult,
-        context: DexterContext
+        observationBefore: DexterActionObservationSnapshot,
+        observationAfter: DexterActionObservationSnapshot
     ) async -> ActionVerificationOutcome
 }
 
-/// Minimal verifier: trusts runtime success flag but reports uncertainty (no observation yet).
-final class UncertainActionVerifier: ActionVerifier {
+@MainActor
+final class ObservingActionVerifier: ActionVerifier {
     func verify(
-        actionRequest: AgentActionRequest,
+        action: DexterAction,
         executionResult: AgentActionResult,
-        context: DexterContext
+        observationBefore: DexterActionObservationSnapshot,
+        observationAfter: DexterActionObservationSnapshot
     ) async -> ActionVerificationOutcome {
-        ActionVerificationOutcome(
-            wasSuccessful: executionResult.reportedSuccess,
-            summary: executionResult.message,
-            confidence: .uncertain
+        let report = DexterActionVerificationEngine.verify(
+            action: action,
+            observationBefore: observationBefore,
+            observationAfter: observationAfter,
+            executionResult: executionResult
         )
+        return ActionVerificationOutcome(status: report.status, summary: report.summary, report: report)
+    }
+}
+
+/// Fallback verifier for tests that supply fixed observation snapshots out of band.
+final class StubActionVerifier: ActionVerifier {
+    var nextOutcome: ActionVerificationOutcome?
+
+    func verify(
+        action: DexterAction,
+        executionResult: AgentActionResult,
+        observationBefore: DexterActionObservationSnapshot,
+        observationAfter: DexterActionObservationSnapshot
+    ) async -> ActionVerificationOutcome {
+        if let nextOutcome {
+            return nextOutcome
+        }
+        let report = DexterActionVerificationEngine.verify(
+            action: action,
+            observationBefore: observationBefore,
+            observationAfter: observationAfter,
+            executionResult: executionResult
+        )
+        return ActionVerificationOutcome(status: report.status, summary: report.summary, report: report)
     }
 }

@@ -2,7 +2,9 @@
 //  ElementLocationDetector.swift
 //  leanring-buddy
 //
-//  Uses Claude's Computer Use API to identify the screen location of UI elements
+//  Uses Claude's Computer Use API to identify the screen location of UI elements.
+//  SECURITY: requires a direct Anthropic API key — do not embed keys in the app.
+//  Prefer the Cloudflare Worker proxy (ClaudeAPI) for production paths.
 //  in screenshots. When a user asks about a visible element (e.g., "click the
 //  blue button"), this detects the element's coordinates so the buddy can
 //  animate to it and point at it.

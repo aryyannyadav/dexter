@@ -14,16 +14,13 @@ import PostHog
 import ScreenCaptureKit
 import SwiftUI
 
-enum CompanionVoiceState {
-    case idle
-    case listening
-    case processing
-    case responding
-}
-
 @MainActor
 final class CompanionManager: ObservableObject {
-    @Published private(set) var voiceState: CompanionVoiceState = .idle
+    let dexterVoiceCoordinator = DexterVoiceCoordinator()
+
+    var voiceInteractionState: DexterVoiceInteractionState {
+        dexterVoiceCoordinator.interactionState
+    }
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
@@ -70,12 +67,20 @@ final class CompanionManager: ObservableObject {
 
     /// Base URL for the Cloudflare Worker proxy. All API requests route
     /// through this so keys never ship in the app binary.
-    private static let workerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
+    private static var workerBaseURL: String {
+        DexterWorkerProxyClient.workerBaseURL
+    }
+
+    let dexterDemonstrationPhaseStore = DexterDemonstrationPhaseStore()
+
+    private let dexterDemonstrationSessionStore = DexterDemonstrationSessionStore()
 
     private lazy var dexterOrchestrator: DexterOrchestrator = {
         DexterOrchestratorFactory.makeDefault(
             workerBaseURL: Self.workerBaseURL,
-            modelIdentifier: selectedModel
+            modelIdentifier: selectedModel,
+            demonstrationPhaseStore: dexterDemonstrationPhaseStore,
+            demonstrationSessionStore: dexterDemonstrationSessionStore
         )
     }()
 
@@ -88,10 +93,12 @@ final class CompanionManager: ObservableObject {
     private var currentResponseTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
-    private var voiceStateCancellable: AnyCancellable?
+    private var voiceCoordinatorForwardCancellable: AnyCancellable?
+    private var demonstrationPhaseForwardCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
     private var accessibilityCheckTimer: Timer?
     private var pendingKeyboardShortcutStartTask: Task<Void, Never>?
+    private var pendingActionApprovalTask: Task<Void, Never>?
     /// Scheduled hide for transient cursor mode — cancelled if the user
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
@@ -106,6 +113,134 @@ final class CompanionManager: ObservableObject {
     /// Used by the panel to show accurate status text ("Active" vs "Ready").
     @Published private(set) var isOverlayVisible: Bool = false
 
+    @Published private(set) var actionConfirmationPresentation: DexterActionConfirmationPresentation?
+
+    @Published private(set) var dexterPersistentMemoryEntries: [DexterMemoryEntry] = []
+    @Published private(set) var dexterSessionExchangeCount: Int = 0
+    @Published private(set) var dexterActiveTaskDescription: String?
+    @Published private(set) var dexterWorkflowContextSummary: String?
+    @Published private(set) var panelLastActionSummary: String?
+
+    var panelLastTypedAction: DexterAction? {
+        dexterOrchestrator.lastTypedAction
+    }
+
+    var panelActiveWorkflowTask: DexterTask? {
+        dexterOrchestrator.taskStateStore.activeWorkflowTask
+    }
+
+    var autoApproveLowRiskActions: Bool {
+        get { dexterOrchestrator.actionPermissionSettings.autoApproveLowRiskActions }
+        set {
+            var updatedSettings = dexterOrchestrator.actionPermissionSettings
+            updatedSettings.autoApproveLowRiskActions = newValue
+            dexterOrchestrator.actionPermissionSettings = updatedSettings
+        }
+    }
+
+    var isPushToTalkEnabled: Bool {
+        get { dexterVoiceCoordinator.voiceSettings.isPushToTalkEnabled }
+        set {
+            var updatedSettings = dexterVoiceCoordinator.voiceSettings
+            updatedSettings.isPushToTalkEnabled = newValue
+            dexterVoiceCoordinator.voiceSettings = updatedSettings
+        }
+    }
+
+    var isSpokenResponsesEnabled: Bool {
+        get { dexterVoiceCoordinator.voiceSettings.isSpokenResponsesEnabled }
+        set {
+            var updatedSettings = dexterVoiceCoordinator.voiceSettings
+            updatedSettings.isSpokenResponsesEnabled = newValue
+            dexterVoiceCoordinator.voiceSettings = updatedSettings
+        }
+    }
+
+    func submitTextMessageToDexter(_ message: String) {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty else { return }
+        lastTranscript = trimmedMessage
+        DexterAnalytics.trackUserMessageSent(transcript: trimmedMessage)
+        sendUserMessageToDexter(trimmedMessage, source: .typedText)
+    }
+
+    func refreshActionConfirmationPresentation() {
+        actionConfirmationPresentation = dexterOrchestrator.actionConfirmationPresentation()
+    }
+
+    func reloadDexterMemoryPresentation() {
+        let memoryStore = dexterOrchestrator.memoryStore
+        dexterPersistentMemoryEntries = memoryStore.allPersistentEntries()
+        dexterSessionExchangeCount = memoryStore.sessionExchangeCount
+        dexterActiveTaskDescription = memoryStore.activeTaskDescription
+        dexterWorkflowContextSummary = memoryStore.workflowContext?.summary
+    }
+
+    func removeDexterMemoryEntry(_ entryId: UUID) {
+        dexterOrchestrator.memoryStore.removePersistentEntry(id: entryId)
+        reloadDexterMemoryPresentation()
+    }
+
+    func clearDexterSessionMemory() {
+        dexterOrchestrator.memoryStore.clearSessionMemory()
+        reloadDexterMemoryPresentation()
+    }
+
+    func clearDexterActiveTask() {
+        dexterOrchestrator.memoryStore.setActiveTask(description: nil, provenance: .explicitUserRequest)
+        reloadDexterMemoryPresentation()
+    }
+
+    func clearDexterWorkflowContext() {
+        dexterOrchestrator.memoryStore.clearWorkflowContext()
+        reloadDexterMemoryPresentation()
+    }
+
+    func cancelPendingActionConfirmation() {
+        dexterOrchestrator.cancelPendingActionConfirmation()
+        refreshActionConfirmationPresentation()
+    }
+
+    func approvePendingActionConfirmation() {
+        pendingActionApprovalTask?.cancel()
+        pendingActionApprovalTask = Task {
+            dexterDemonstrationPhaseStore.transition(to: .acting, detail: "Running approved action")
+            let outcome = await dexterOrchestrator.approvePendingActionConfirmation()
+            guard !Task.isCancelled else { return }
+            refreshActionConfirmationPresentation()
+            guard let outcome else { return }
+            panelLastActionSummary = outcome.verificationReport?.summary ?? outcome.spokenSummary
+            dexterVoiceCoordinator.recordAssistantResponse(outcome.spokenSummary)
+            let spokenText = outcome.spokenSummary
+            if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               dexterVoiceCoordinator.voiceSettings.isSpokenResponsesEnabled {
+                do {
+                    try await elevenLabsTTSClient.speakText(spokenText)
+                    dexterVoiceCoordinator.transitionToSpeaking()
+                } catch {
+                    DexterAnalytics.trackTTSError(error: error.localizedDescription)
+                    print("⚠️ ElevenLabs TTS error after action approval: \(error)")
+                    speakSystemVoiceLine(DexterUserFacingErrorMessage.forTextToSpeechError(error))
+                }
+            }
+        }
+    }
+
+    #if DEBUG
+    @Published private(set) var developmentContextInspectorSnapshot: DexterDevelopmentContextInspectorSnapshot?
+
+    var isDevelopmentContextInspectorEnabled: Bool {
+        DexterDevelopmentContextInspectorSettings.isEnabled
+    }
+
+    func setDevelopmentContextInspectorEnabled(_ isEnabled: Bool) {
+        DexterDevelopmentContextInspectorSettings.setEnabled(isEnabled)
+        if !isEnabled {
+            developmentContextInspectorSnapshot = nil
+        }
+    }
+    #endif
+
     /// The Claude model used for voice responses. Persisted to UserDefaults.
     @Published var selectedModel: String = UserDefaults.standard.string(forKey: "selectedClaudeModel") ?? "claude-sonnet-4-6"
 
@@ -118,13 +253,11 @@ final class CompanionManager: ObservableObject {
     /// User preference for whether the Dexter cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
-    @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
-        ? true
-        : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+    @Published var isDexterCursorEnabled: Bool = DexterCursorVisibilityPreferences.readIsCursorOverlayEnabled()
 
-    func setClickyCursorEnabled(_ enabled: Bool) {
-        isClickyCursorEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
+    func setDexterCursorEnabled(_ enabled: Bool) {
+        isDexterCursorEnabled = enabled
+        DexterCursorVisibilityPreferences.writeIsCursorOverlayEnabled(enabled)
         transientHideTask?.cancel()
         transientHideTask = nil
 
@@ -167,7 +300,8 @@ final class CompanionManager: ObservableObject {
         refreshAllPermissions()
         print("🔑 Dexter start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
-        bindVoiceStateObservation()
+        bindDemonstrationPhaseStore()
+        bindDexterVoiceCoordinator()
         bindAudioPowerLevel()
         bindShortcutTransitions()
         // Eagerly warm up the model provider TLS handshake before onboarding interactions.
@@ -177,7 +311,7 @@ final class CompanionManager: ObservableObject {
         // still granted, show the cursor overlay immediately. If permissions
         // were revoked (e.g. signing change), don't show the cursor — the
         // panel will show the permissions UI instead.
-        if hasCompletedOnboarding && allPermissionsGranted && isClickyCursorEnabled {
+        if hasCompletedOnboarding && allPermissionsGranted && isDexterCursorEnabled {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
@@ -196,7 +330,7 @@ final class CompanionManager: ObservableObject {
         // again on future launches — the cursor will auto-show instead
         hasCompletedOnboarding = true
 
-        ClickyAnalytics.trackOnboardingStarted()
+        DexterAnalytics.trackOnboardingStarted()
 
         // Play Besaid theme at 60% volume, fade out after 1m 30s
         startOnboardingMusic()
@@ -212,7 +346,7 @@ final class CompanionManager: ObservableObject {
     /// is already visible so we just restart the welcome animation and video.
     func replayOnboarding() {
         NotificationCenter.default.post(name: .dexterDismissPanel, object: nil)
-        ClickyAnalytics.trackOnboardingReplayed()
+        DexterAnalytics.trackOnboardingReplayed()
         startOnboardingMusic()
         // Tear down any existing overlays and recreate with isFirstAppearance = true
         overlayWindowManager.hasShownOverlayBefore = false
@@ -286,7 +420,8 @@ final class CompanionManager: ObservableObject {
         currentResponseTask?.cancel()
         currentResponseTask = nil
         shortcutTransitionCancellable?.cancel()
-        voiceStateCancellable?.cancel()
+        voiceCoordinatorForwardCancellable?.cancel()
+        voiceInteractionStateCancellables.removeAll()
         audioPowerCancellable?.cancel()
         accessibilityCheckTimer?.invalidate()
         accessibilityCheckTimer = nil
@@ -321,13 +456,13 @@ final class CompanionManager: ObservableObject {
 
         // Track individual permission grants as they happen
         if !previouslyHadAccessibility && hasAccessibilityPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "accessibility")
+            DexterAnalytics.trackPermissionGranted(permission: "accessibility")
         }
         if !previouslyHadScreenRecording && hasScreenRecordingPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
+            DexterAnalytics.trackPermissionGranted(permission: "screen_recording")
         }
         if !previouslyHadMicrophone && hasMicrophonePermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "microphone")
+            DexterAnalytics.trackPermissionGranted(permission: "microphone")
         }
         // Screen content permission is persisted — once the user has approved the
         // SCShareableContent picker, we don't need to re-check it.
@@ -336,7 +471,7 @@ final class CompanionManager: ObservableObject {
         }
 
         if !previouslyHadAll && allPermissionsGranted {
-            ClickyAnalytics.trackAllPermissionsGranted()
+            DexterAnalytics.trackAllPermissionsGranted()
         }
     }
 
@@ -369,10 +504,10 @@ final class CompanionManager: ObservableObject {
                     guard didCapture else { return }
                     hasScreenContentPermission = true
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
-                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
+                    DexterAnalytics.trackPermissionGranted(permission: "screen_content")
 
                     // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
+                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isDexterCursorEnabled {
                         overlayWindowManager.hasShownOverlayBefore = true
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
@@ -417,38 +552,43 @@ final class CompanionManager: ObservableObject {
             }
     }
 
-    private func bindVoiceStateObservation() {
-        voiceStateCancellable = buddyDictationManager.$isRecordingFromKeyboardShortcut
-            .combineLatest(
-                buddyDictationManager.$isFinalizingTranscript,
-                buddyDictationManager.$isPreparingToRecord
-            )
+    private func bindDemonstrationPhaseStore() {
+        demonstrationPhaseForwardCancellable = dexterDemonstrationPhaseStore.objectWillChange
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] isRecording, isFinalizing, isPreparing in
-                guard let self else { return }
-                // Don't override .responding — the AI response pipeline
-                // manages that state directly until streaming finishes.
-                guard self.voiceState != .responding else { return }
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+    }
 
-                if isFinalizing {
-                    self.voiceState = .processing
-                } else if isRecording {
-                    self.voiceState = .listening
-                } else if isPreparing {
-                    self.voiceState = .processing
-                } else {
-                    self.voiceState = .idle
-                    // If the user pressed and released the hotkey without
-                    // saying anything, no response task runs — schedule the
-                    // transient hide here so the overlay doesn't get stuck.
-                    // Only do this when no response is in flight, otherwise
-                    // the brief idle gap between recording and processing
-                    // would prematurely hide the overlay.
-                    if self.currentResponseTask == nil {
-                        self.scheduleTransientHideIfNeeded()
-                    }
+    private func bindDexterVoiceCoordinator() {
+        dexterVoiceCoordinator.bindDictationManager(buddyDictationManager)
+        voiceCoordinatorForwardCancellable = dexterVoiceCoordinator.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+
+        dexterVoiceCoordinator.$interactionState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] interactionState in
+                guard let self else { return }
+                if interactionState == .idle && self.currentResponseTask == nil {
+                    self.scheduleTransientHideIfNeeded()
                 }
             }
+            .store(in: &voiceInteractionStateCancellables)
+    }
+
+    private var voiceInteractionStateCancellables = Set<AnyCancellable>()
+
+    private func cancelActiveDexterVoiceInteraction() {
+        currentResponseTask?.cancel()
+        pendingActionApprovalTask?.cancel()
+        elevenLabsTTSClient.stopPlayback()
+        dexterVoiceCoordinator.handleUserInterruption()
+        Task {
+            await dexterOrchestrator.cancelInFlightComputerActionIfNeeded()
+        }
     }
 
     private func bindShortcutTransitions() {
@@ -463,6 +603,7 @@ final class CompanionManager: ObservableObject {
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
         switch transition {
         case .pressed:
+            guard dexterVoiceCoordinator.voiceSettings.isPushToTalkEnabled else { return }
             guard !buddyDictationManager.isDictationInProgress else { return }
             // Don't register push-to-talk while the onboarding video is playing
             guard !showOnboardingVideo else { return }
@@ -472,7 +613,7 @@ final class CompanionManager: ObservableObject {
             transientHideTask = nil
 
             // If the cursor is hidden, bring it back transiently for this interaction
-            if !isClickyCursorEnabled && !isOverlayVisible {
+            if !isDexterCursorEnabled && !isOverlayVisible {
                 overlayWindowManager.hasShownOverlayBefore = true
                 overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                 isOverlayVisible = true
@@ -481,9 +622,7 @@ final class CompanionManager: ObservableObject {
             // Dismiss the menu bar panel so it doesn't cover the screen
             NotificationCenter.default.post(name: .dexterDismissPanel, object: nil)
 
-            // Cancel any in-progress response and TTS from a previous utterance
-            currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
+            cancelActiveDexterVoiceInteraction()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -498,7 +637,7 @@ final class CompanionManager: ObservableObject {
             }
     
 
-            ClickyAnalytics.trackPushToTalkStarted()
+            DexterAnalytics.trackPushToTalkStarted()
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
@@ -509,9 +648,11 @@ final class CompanionManager: ObservableObject {
                     },
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
-                        print("🗣️ Companion received transcript: \(finalTranscript)")
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
-                        self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
+                        #if DEBUG
+                        print("🗣️ Companion received transcript (\(finalTranscript.count) characters, redacted)")
+                        #endif
+                        DexterAnalytics.trackUserMessageSent(transcript: finalTranscript)
+                        self?.sendUserMessageToDexter(finalTranscript, source: .pushToTalkTranscript)
                     }
                 )
             }
@@ -520,7 +661,7 @@ final class CompanionManager: ObservableObject {
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
-            ClickyAnalytics.trackPushToTalkReleased()
+            DexterAnalytics.trackPushToTalkReleased()
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
@@ -529,76 +670,44 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    // MARK: - Companion Prompt
+    // MARK: - Dexter Voice response pipeline
 
-    private static let companionVoiceResponseSystemPrompt = """
-    you're dexter, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
-
-    rules:
-    - default to one or two sentences. be direct and dense. BUT if the user asks you to explain more, go deeper, or elaborate, then go all out — give a thorough, detailed explanation with no length limit.
-    - all lowercase, casual, warm. no emojis.
-    - write for the ear, not the eye. short sentences. no lists, bullet points, markdown, or formatting — just natural speech.
-    - don't use abbreviations or symbols that sound weird read aloud. write "for example" not "e.g.", spell out small numbers.
-    - if the user's question relates to what's on their screen, reference specific things you see.
-    - if the screenshot doesn't seem relevant to their question, just answer the question directly.
-    - you can help with anything — coding, writing, general knowledge, brainstorming.
-    - never say "simply" or "just".
-    - don't read out code verbatim. describe what the code does or what needs to change conversationally.
-    - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
-    - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
-    - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
-
-    element pointing:
-    you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
-
-    don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
-
-    when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
-
-    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
-
-    if pointing wouldn't help, append [POINT:none].
-
-    examples:
-    - user asks how to color grade in final cut: "you'll want to open the color inspector — it's right up in the top right area of the toolbar. click that and you'll get all the color wheels and curves. [POINT:1100,42:color inspector]"
-    - user asks what html is: "html stands for hypertext markup language, it's basically the skeleton of every web page. curious how it connects to the css you're looking at? [POINT:none]"
-    - user asks how to commit in xcode: "see that source control menu up top? click that and hit commit, or you can use command option c as a shortcut. [POINT:285,11:source control]"
-    - element is on screen 2 (not where cursor is): "that's over on your other monitor — see the terminal window? [POINT:400,300:terminal:screen2]"
-    """
-
-    // MARK: - AI Response Pipeline
-
-    /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
-    /// the spinner/processing state until TTS audio begins playing.
-    /// Claude's response may include a [POINT:x,y:label] tag which triggers
-    /// the buddy to fly to that element on screen.
-    private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
-        currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+    /// Speech-to-text (push-to-talk) or typed text → streamed model response → optional TTS.
+    private func sendUserMessageToDexter(_ transcript: String, source: DexterVoiceUserMessageSource) {
+        cancelActiveDexterVoiceInteraction()
 
         currentResponseTask = Task {
-            // Stay in processing (spinner) state — no streaming text displayed
-            voiceState = .processing
+            dexterVoiceCoordinator.resetStreamingResponseText()
+            dexterVoiceCoordinator.transitionToThinking()
 
             do {
                 let orchestratorResponse = try await dexterOrchestrator.generateModelResponse(
                     userTranscript: transcript,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                    systemPrompt: DexterVoiceSystemPrompt.conciseVoiceResponseSystemPrompt,
+                    options: DexterModelGenerationOptions(
+                        hasPersistedScreenContentGrant: hasScreenContentPermission
+                    ),
+                    onTextChunk: { [weak self] chunk in
+                        self?.dexterVoiceCoordinator.appendStreamingResponseChunk(chunk)
                     }
                 )
 
                 guard !Task.isCancelled else { return }
 
+                updateDevelopmentContextInspectorIfNeeded(from: orchestratorResponse.context)
+                refreshActionConfirmationPresentation()
+
                 let fullResponseText = orchestratorResponse.fullResponseText
+                dexterDemonstrationSessionStore.recordProposedFix(fromAssistantResponse: fullResponseText)
+
                 let screenCaptureSnapshots = orchestratorResponse.context.screenCaptures
                 let screenCaptures = screenCaptureSnapshots.map { CompanionScreenCapture(snapshot: $0) }
 
+                let responseTextForDisplay = DexterFixTagParser.spokenText(removingFixTagFrom: fullResponseText)
                 // Parse the [POINT:...] tag from Claude's response
-                let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
+                let parseResult = Self.parsePointingCoordinates(from: responseTextForDisplay)
                 let spokenText = parseResult.spokenText
+                dexterVoiceCoordinator.recordAssistantResponse(spokenText)
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle
@@ -606,7 +715,7 @@ final class CompanionManager: ObservableObject {
                 // spinner hides the triangle and the flight animation is invisible.
                 let hasPointCoordinate = parseResult.coordinate != nil
                 if hasPointCoordinate {
-                    voiceState = .idle
+                    dexterVoiceCoordinator.transitionToIdle()
                 }
 
                 // Pick the screen capture matching Claude's screen number,
@@ -649,7 +758,7 @@ final class CompanionManager: ObservableObject {
 
                     detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
+                    DexterAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
@@ -659,36 +768,48 @@ final class CompanionManager: ObservableObject {
                     userTranscript: transcript,
                     assistantResponse: spokenText
                 )
+                if orchestratorResponse.responseMode == .act {
+                    panelLastActionSummary = orchestratorResponse.fullResponseText
+                } else if let lastAction = dexterOrchestrator.lastTypedAction,
+                          lastAction.state == .completed || lastAction.state == .verificationFailed || lastAction.state == .failed {
+                    panelLastActionSummary = orchestratorResponse.fullResponseText
+                }
+                reloadDexterMemoryPresentation()
 
                 let exchangeCount = dexterOrchestrator.memoryStore.recentExchanges(limit: 10).count
                 print("🧠 Conversation history: \(exchangeCount) exchanges")
 
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+                DexterAnalytics.trackAIResponseReceived(response: spokenText)
 
-                // Play the response via TTS. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
-                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   dexterVoiceCoordinator.voiceSettings.isSpokenResponsesEnabled {
                     do {
                         try await elevenLabsTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
-                        voiceState = .responding
+                        dexterVoiceCoordinator.transitionToSpeaking()
                     } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                        DexterAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakCreditsErrorFallback()
+                        speakSystemVoiceLine(DexterUserFacingErrorMessage.forTextToSpeechError(error))
                     }
                 }
             } catch is CancellationError {
-                // User spoke again — response was interrupted
+                dexterDemonstrationPhaseStore.reset()
             } catch {
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
+                DexterAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
-                speakCreditsErrorFallback()
+                let userMessage = DexterUserFacingErrorMessage.forCompanionModelError(error)
+                if !userMessage.isEmpty {
+                    dexterVoiceCoordinator.recordAssistantResponse(userMessage)
+                    dexterVoiceCoordinator.appendStreamingResponseChunk(userMessage)
+                    speakSystemVoiceLine(userMessage)
+                }
             }
 
             if !Task.isCancelled {
-                voiceState = .idle
-                scheduleTransientHideIfNeeded()
+                dexterVoiceCoordinator.transitionToIdle()
+                if source == .pushToTalkTranscript {
+                    scheduleTransientHideIfNeeded()
+                }
             }
         }
     }
@@ -697,8 +818,16 @@ final class CompanionManager: ObservableObject {
     /// waits for TTS playback and any pointing animation to finish, then
     /// fades out the overlay after a 1-second pause. Cancelled automatically
     /// if the user starts another push-to-talk interaction.
+    #if DEBUG
+    private func updateDevelopmentContextInspectorIfNeeded(from context: DexterContext) {
+        developmentContextInspectorSnapshot = dexterOrchestrator.developmentContextInspectorSnapshotIfEnabled(for: context)
+    }
+    #else
+    private func updateDevelopmentContextInspectorIfNeeded(from context: DexterContext) {}
+    #endif
+
     private func scheduleTransientHideIfNeeded() {
-        guard !isClickyCursorEnabled && isOverlayVisible else { return }
+        guard !isDexterCursorEnabled && isOverlayVisible else { return }
 
         transientHideTask?.cancel()
         transientHideTask = Task {
@@ -723,14 +852,13 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// Speaks a hardcoded error message using macOS system TTS when API
-    /// credits run out. Uses NSSpeechSynthesizer so it works even when
-    /// ElevenLabs is down.
-    private func speakCreditsErrorFallback() {
-        let utterance = "I'm all out of credits. Please check your API configuration and try again later."
+    /// Short system TTS for errors when ElevenLabs is unavailable (does not replace chat text).
+    private func speakSystemVoiceLine(_ message: String) {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty else { return }
         let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(utterance)
-        voiceState = .responding
+        synthesizer.startSpeaking(trimmedMessage)
+        dexterVoiceCoordinator.transitionToSpeaking()
     }
 
     // MARK: - Point Tag Parsing
@@ -799,12 +927,12 @@ final class CompanionManager: ObservableObject {
         onboardingVideoOpacity = 0.0
         tearDownOnboardingVideo()
 
-        ClickyAnalytics.trackOnboardingDemoTriggered()
+        DexterAnalytics.trackOnboardingDemoTriggered()
         performOnboardingDemoInteraction()
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) { [weak self] in
             guard let self else { return }
-            ClickyAnalytics.trackOnboardingVideoCompleted()
+            DexterAnalytics.trackOnboardingVideoCompleted()
             self.startOnboardingPromptStream()
         }
     }
@@ -896,7 +1024,8 @@ final class CompanionManager: ObservableObject {
     /// onboarding to demo the pointing feature while the intro video plays.
     func performOnboardingDemoInteraction() {
         // Don't interrupt an active voice response
-        guard voiceState == .idle || voiceState == .responding else { return }
+        let interactionState = dexterVoiceCoordinator.interactionState
+        guard interactionState == .idle || interactionState == .speaking else { return }
 
         Task {
             do {
@@ -913,7 +1042,8 @@ final class CompanionManager: ObservableObject {
                     systemPrompt: Self.onboardingDemoSystemPrompt,
                     options: DexterModelGenerationOptions(
                         screenCaptureOverride: [cursorScreenSnapshot],
-                        includeSessionConversationHistory: false
+                        includeSessionConversationHistory: false,
+                        hasPersistedScreenContentGrant: hasScreenContentPermission
                     ),
                     onTextChunk: { _ in }
                 )

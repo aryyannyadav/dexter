@@ -27,7 +27,9 @@ enum CompanionScreenCaptureUtility {
     /// Captures all connected displays as JPEG data, labeling each with
     /// whether the user's cursor is on that screen. This gives the AI
     /// full context across multiple monitors.
-    static func captureAllScreensAsJPEG() async throws -> [CompanionScreenCapture] {
+    /// Captures all displays, prioritizing the display that contains `pointerLocationInScreenSpace`.
+    /// When nil, uses the current mouse location at capture time.
+    static func captureAllScreensAsJPEG(pointerLocationInScreenSpace: CGPoint? = nil) async throws -> [CompanionScreenCapture] {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
@@ -35,7 +37,7 @@ enum CompanionScreenCaptureUtility {
                           userInfo: [NSLocalizedDescriptionKey: "No display available for capture"])
         }
 
-        let mouseLocation = NSEvent.mouseLocation
+        let mouseLocation = pointerLocationInScreenSpace ?? NSEvent.mouseLocation
 
         // Exclude all windows belonging to this app so the AI sees
         // only the user's content, not our overlays or panels.

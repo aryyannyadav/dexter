@@ -14,6 +14,27 @@ interface Env {
   ELEVENLABS_API_KEY: string;
   ELEVENLABS_VOICE_ID: string;
   ASSEMBLYAI_API_KEY: string;
+  /** When set, clients must send matching `X-Dexter-Proxy-Key` (not an upstream API key). */
+  DEXTER_PROXY_CLIENT_KEY?: string;
+}
+
+function unauthorizedProxyResponse(): Response {
+  return new Response(JSON.stringify({ error: "Unauthorized" }), {
+    status: 401,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function assertProxyClientAuthorized(request: Request, env: Env): Response | null {
+  const requiredClientKey = env.DEXTER_PROXY_CLIENT_KEY?.trim();
+  if (!requiredClientKey) {
+    return null;
+  }
+  const providedClientKey = request.headers.get("X-Dexter-Proxy-Key")?.trim();
+  if (providedClientKey !== requiredClientKey) {
+    return unauthorizedProxyResponse();
+  }
+  return null;
 }
 
 export default {
@@ -22,6 +43,11 @@ export default {
 
     if (request.method !== "POST") {
       return new Response("Method not allowed", { status: 405 });
+    }
+
+    const authorizationFailure = assertProxyClientAuthorized(request, env);
+    if (authorizationFailure) {
+      return authorizationFailure;
     }
 
     try {

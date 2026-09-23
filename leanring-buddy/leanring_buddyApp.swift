@@ -37,10 +37,13 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         print("🎯 Dexter: Starting...")
         print("🎯 Dexter: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 
-        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
+        UserDefaults.standard.register(defaults: [
+            "NSInitialToolTipDelay": 0,
+            "dexterDevelopmentContextInspectorEnabled": false
+        ])
 
-        ClickyAnalytics.configure()
-        ClickyAnalytics.trackAppOpened()
+        DexterAnalytics.configure()
+        DexterAnalytics.trackAppOpened()
 
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
         companionManager.start()

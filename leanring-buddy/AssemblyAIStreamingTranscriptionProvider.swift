@@ -17,10 +17,6 @@ struct AssemblyAIStreamingTranscriptionProviderError: LocalizedError {
 }
 
 final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider {
-    /// URL for the Cloudflare Worker endpoint that returns a short-lived
-    /// AssemblyAI streaming token. The real API key never leaves the server.
-    private static let tokenProxyURL = "https://your-worker-name.your-subdomain.workers.dev/transcribe-token"
-
     let displayName = "AssemblyAI"
     let requiresSpeechRecognitionPermission = false
 
@@ -41,7 +37,9 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
     ) async throws -> any BuddyStreamingTranscriptionSession {
         // Fetch a fresh temporary token from the proxy before each session
         let temporaryToken = try await fetchTemporaryToken()
-        print("🎙️ AssemblyAI: fetched temporary token (\(temporaryToken.prefix(20))...)")
+        #if DEBUG
+        print("🎙️ AssemblyAI: fetched temporary streaming token (redacted)")
+        #endif
 
         let session = AssemblyAIStreamingTranscriptionSession(
             apiKey: nil,
@@ -59,8 +57,9 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 
     /// Calls the Cloudflare Worker to get a short-lived AssemblyAI token.
     private func fetchTemporaryToken() async throws -> String {
-        var request = URLRequest(url: URL(string: Self.tokenProxyURL)!)
+        var request = URLRequest(url: DexterWorkerProxyClient.url(path: "/transcribe-token"))
         request.httpMethod = "POST"
+        DexterWorkerProxyClient.applyAuthenticationHeaders(to: &request)
 
         let (data, response) = try await URLSession.shared.data(for: request)
 

@@ -21,7 +21,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
-- **Analytics**: PostHog via `ClickyAnalytics.swift`
+- **Analytics**: PostHog via `DexterAnalytics.swift`
 
 ### API Proxy (Cloudflare Worker)
 
@@ -33,8 +33,10 @@ The app never calls external APIs directly. All requests go through a Cloudflare
 | `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
 | `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
+Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`, optional `DEXTER_PROXY_CLIENT_KEY` (requires matching `DexterProxyClientKey` in app Info.plist — not an upstream API key)
 Worker vars: `ELEVENLABS_VOICE_ID`
+
+App Info.plist (optional, no secrets in git): `DexterWorkerBaseURL`, `DexterProxyClientKey`, `PostHogProjectAPIKey`. See `leanring-buddy/Secrets.xcconfig.example`. Never commit `OpenAIAPIKey` or worker upstream keys.
 
 ### Key Architecture Decisions
 
@@ -53,17 +55,63 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central UI/voice state machine. Owns dictation, shortcut monitoring, overlay, TTS, and onboarding. Delegates context + model + session memory to `DexterOrchestrator`. |
+| `CompanionManager.swift` | ~1050 | Central UI state machine; wires **Dexter Voice** (PTT, STT, streamed text, optional TTS) via `DexterVoiceCoordinator`. Delegates model/context to `DexterOrchestrator`. |
+| `Dexter/DexterVoiceCoordinator.swift` | ~120 | Listening / thinking / speaking lifecycle; reuses `BuddyDictationManager` + `ElevenLabsTTSClient`. |
+| `Dexter/DexterVoiceSettingsStore.swift` | ~55 | Optional push-to-talk and spoken-response toggles (UserDefaults). |
+| `Dexter/DexterVoiceSystemPrompt.swift` | ~25 | Concise spoken-response system prompt. |
+| `DexterVoiceTextInputView.swift` | ~70 | Panel text input when voice is off or alongside PTT. |
 | `Dexter/DexterOrchestrator.swift` | ~150 | Coordinates `ContextProvider`, `ModelProvider`, `MemoryStore`, `PermissionManager`, `AgentRuntime`, and `ActionVerifier`. |
 | `Dexter/ModelProvider.swift` | ~80 | Model abstraction; `ClaudeModelProvider` wraps `ClaudeAPI`. |
-| `Dexter/MemoryStore.swift` | ~55 | Session conversation memory (`SessionMemoryStore`). |
-| `Dexter/DexterContext.swift` | ~55 | Context snapshot types. |
-| `Dexter/ContextProvider.swift` | ~30 | `ScreenCaptureContextProvider` for screenshots. |
+| `Dexter/MemoryStore.swift` | ~200 | `MemoryStore` protocol, `SessionMemoryStore`, `DefaultMemoryStore` (session + persistent). |
+| `Dexter/PersistentMemoryStore.swift` | ~120 | On-disk explicit preferences, facts, task, and workflow state (`~/Library/Application Support/Dexter/`). |
+| `Dexter/DexterMemoryModels.swift` | ~45 | Memory entry kinds, provenance, workflow state models. |
+| `Dexter/DexterMemoryIntentProcessor.swift` | ~110 | Explicit “remember”, preference, task, and workflow intents only (no ambient auto-save). |
+| `Dexter/DexterTask.swift` | ~100 | `DexterTask`, `TaskStep`, `TaskState` for bounded workflows. |
+| `Dexter/TaskPlanner.swift` | ~90 | Allowlisted workflow templates (assignment submission v1). |
+| `Dexter/DexterTaskWorkflowRunner.swift` | ~350 | Multi-step turn processor; AgentRuntime only on Safari step. |
+| `Dexter/DexterTaskStateStore.swift` | ~55 | `DexterWorkflowTaskStateStore` syncs workflow + memory task description. |
+| `DexterMemoryManagementView.swift` | ~150 | Menu bar UI to view/remove session and persistent Dexter memory. |
+| `Dexter/DexterContext.swift` | ~120 | Typed `DexterContext` and screen capture snapshots. |
+| `Dexter/DexterContextModels.swift` | ~80 | Sub-structures (pointer, app, window, clipboard, task, etc.). |
+| `Dexter/DexterContextAssembler.swift` | ~200 | Per-invocation context engine (pointer attention, screenshot on demand, AX, clipboard). |
+| `Dexter/DexterContextRelevancePlanner.swift` | ~120 | Chooses which context sections belong in each model request. |
+| `Dexter/DexterStructuredModelRequestBuilder.swift` | ~180 | Builds structured USER REQUEST / POINTER / SCREEN / … prompts for `ModelProvider`. |
+| `Dexter/DexterResponseMode.swift` | ~15 | ANSWER / EXPLAIN / TEACH / TROUBLESHOOT / GUIDE / ACT modes. |
+| `Dexter/DexterTeachingIntentRecognizer.swift` | ~100 | Maps user utterances to response mode. |
+| `Dexter/DexterTeachingModeInstructions.swift` | ~100 | Teaching-mode system prompt supplements + context plan adjustments. |
+| `Dexter/DexterAttentionContext.swift` | ~150 | Pointer region + screenshot-space attention geometry. |
+| `Dexter/DexterPointerAccessibilityHintCollector.swift` | ~70 | Unverified AX hints at pointer (not UI identity). |
+| `Dexter/DexterDevelopmentContextInspector.swift` | ~80 | DEBUG-only last-invocation context snapshot for the menu bar panel. |
+| `CompanionDevelopmentContextInspectorView.swift` | ~60 | DEBUG SwiftUI inspector toggle and rows. |
+| `Dexter/DexterEnvironmentContextCollector.swift` | ~120 | Active app/window/selection via Accessibility. |
+| `Dexter/ContextProvider.swift` | ~25 | Legacy adapter over `DexterContextAssembler`. |
 | `Dexter/PermissionManager.swift` | ~45 | macOS permission snapshot + request helpers. |
-| `Dexter/AgentRuntime.swift` | ~45 | Agent execution boundary; `OpenClawAgentRuntimeAdapter` stub. |
-| `Dexter/ActionVerifier.swift` | ~40 | Post-action verification (`UncertainActionVerifier`). |
+| `Dexter/AgentRuntime.swift` | ~260 | Agent execution boundary; `OpenClawAgentRuntimeAdapter` calls the bundled OpenClaw CLI for Safari when MacDexter cannot handle the request. |
+| `Dexter/MacDexterAgentRuntimeAdapter.swift` | ~210 | `MacDexterAgentRuntimeAdapter` (NSWorkspace open VS Code/Safari, paste fix via clipboard + Cmd+V) and `CompositeDexterAgentRuntime`. |
+| `Dexter/DexterDemonstrationPhase.swift` | ~35 | Hackathon-visible phases: SEEING → THINKING → PLANNING → WAITING FOR APPROVAL → ACTING → VERIFYING → DONE. |
+| `Dexter/DexterFixTagParser.swift` | ~55 | Parses `[DEXTER_FIX:…]` from teach responses; `DexterDemonstrationSessionStore` holds pending fix for “fix it”. |
+| `Dexter/DexterPointerControlWorkflow.swift` | ~70 | POINT → ASK → EXPLAIN → ACT → VERIFY at the pointer (what is this / enable it → click + AX verify). |
+| `Dexter/DexterActionObservationPointerResolver.swift` | ~20 | Uses click coordinates for post-action observation at the intended target. |
+| `Dexter/DexterUserFacingErrorMessage.swift` | ~90 | Maps network, model, TTS, permission, and runtime failures to safe user-facing copy. |
+| `Dexter/DexterAgentRuntimeExecutionGuard.swift` | ~40 | Action execution timeout + cancellation hook into `AgentRuntime.cancelCurrentAction()`. |
+| `Dexter/DexterTypedAction.swift` | ~150 | Typed actions (OpenApplication, Click, RunTask, …), risk, state, and factories. |
+| `Dexter/DexterActionStore.swift` | ~55 | In-memory typed action registry with state updates. |
+| `Dexter/DexterActionPermissionPolicy.swift` | ~110 | PermissionManager action evaluation and runtime allowlist. |
+| `Dexter/DexterActionPermissionSettings.swift` | ~45 | LOW_RISK auto-approve preference (UserDefaults). |
+| `Dexter/DexterActionConfirmationPolicy.swift` | ~100 | READ_ONLY / LOW / MODERATE / HIGH confirmation rules + WHAT/WHY/WHERE copy. |
+| `DexterActionConfirmationView.swift` | ~90 | Menu bar confirmation UI (Cancel / Allow). |
+| `Dexter/DexterActionExecutionPipeline.swift` | ~150 | PLAN → PERMISSION → EXECUTE → OBSERVE → VERIFY → REPORT with optional safe retry. |
+| `Dexter/DexterActionPlanner.swift` | ~90 | Voice ACT planner; open VS Code/Safari or apply taught `[DEXTER_FIX:…]` via TypeText. |
+| `Dexter/ActionVerifier.swift` | ~70 | `ObservingActionVerifier` wraps `DexterActionVerificationEngine` (SUCCESS / FAILED / UNCERTAIN). |
+| `Dexter/DexterActionObservation.swift` | ~65 | Post-execute fresh context snapshots via `MacDexterActionContextObserver`. |
+| `Dexter/DexterActionVerificationEngine.swift` | ~200 | Compares intended vs observed state; does not trust runtime success alone. |
+| `Dexter/DexterActionSafeRetryPolicy.swift` | ~25 | One safe retry for low-risk open/navigate actions when verification fails. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
-| `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
+| `CompanionPanelView.swift` | ~15 | Hosts `DexterCompanionPanelContent` for the menu bar panel. |
+| `DexterCompanionPanelContent.swift` | ~280 | Premium minimal panel: companion header, voice/chat, actions, task, memory, settings. |
+| `DexterUIComponents.swift` | ~320 | Dexter cards, voice indicators, chat, execution/verification UI. |
+| `Dexter/DexterVisualIdentity.swift` | ~40 | Signal-cyan brand tokens on graphite (`DS` surfaces). |
+| `Dexter/DexterPanelPresentation.swift` | ~90 | View-model labels for voice/action/task UI (testable). |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
@@ -79,9 +127,11 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
-| `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
+| `DexterWorkerProxyClient.swift` | ~40 | Worker base URL + optional `X-Dexter-Proxy-Key` header for all proxy API calls. |
+| `DexterAnalytics.swift` | ~120 | PostHog analytics (optional; no message content in events). |
+| `DexterCursorVisibilityPreferences.swift` | ~25 | Cursor overlay visibility UserDefaults (migrates legacy `isClickyCursorEnabled`). |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run

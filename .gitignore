@@ -1,0 +1,20 @@
+# Local secrets and environment
+.env
+.env.*
+worker/.dev.vars
+**/.dev.vars
+
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Dependencies
+node_modules/
+
+# Optional per-developer API keys (copy from example, do not commit)
+leanring-buddy/Secrets.xcconfig

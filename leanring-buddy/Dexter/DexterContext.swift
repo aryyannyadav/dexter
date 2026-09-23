@@ -8,7 +8,7 @@
 import AppKit
 import Foundation
 
-/// A single labeled screen capture included in context.
+/// A single labeled screen capture included in context (in-memory only for the invocation).
 struct DexterScreenCaptureSnapshot: Equatable {
     let imageData: Data
     let label: String
@@ -48,19 +48,94 @@ extension CompanionScreenCapture {
     }
 }
 
-/// Collected context for one Dexter interaction. Fields expand as features are added.
+/// Fully typed context assembled once per Dexter invocation.
 struct DexterContext: Equatable {
-    var screenCaptures: [DexterScreenCaptureSnapshot]
-    var pointerLocationInScreenSpace: CGPoint?
-    var userTranscript: String?
+    var userMessage: DexterUserMessageContext
+    var pointer: DexterPointerContext?
+    var display: DexterDisplayContext?
+    var screen: DexterScreenContext
+    var activeApplication: DexterActiveApplicationContext
+    var activeWindow: DexterActiveWindowContext
+    var selectedText: DexterSelectedTextContext
+    var clipboard: DexterClipboardContext
+    var conversation: DexterConversationContext
+    var recentActions: DexterActionHistoryContext
+    var currentTask: DexterTaskContext
+    var persistentMemory: DexterPersistentMemoryContext
+    var attention: DexterAttentionContext
 
     init(
-        screenCaptures: [DexterScreenCaptureSnapshot] = [],
-        pointerLocationInScreenSpace: CGPoint? = nil,
-        userTranscript: String? = nil
+        userMessage: DexterUserMessageContext,
+        pointer: DexterPointerContext? = nil,
+        display: DexterDisplayContext? = nil,
+        screen: DexterScreenContext = DexterScreenContext(
+            primaryScreenshot: nil,
+            allScreens: [],
+            captureAvailability: .notApplicable
+        ),
+        activeApplication: DexterActiveApplicationContext = DexterActiveApplicationContext(
+            bundleIdentifier: nil,
+            localizedName: nil,
+            availability: .notApplicable
+        ),
+        activeWindow: DexterActiveWindowContext = DexterActiveWindowContext(
+            title: nil,
+            availability: .notApplicable
+        ),
+        selectedText: DexterSelectedTextContext = DexterSelectedTextContext(
+            selectedText: nil,
+            availability: .notApplicable
+        ),
+        clipboard: DexterClipboardContext = DexterClipboardContext(
+            stringValue: nil,
+            inclusionReason: nil,
+            availability: .notApplicable
+        ),
+        conversation: DexterConversationContext = DexterConversationContext(recentExchanges: []),
+        recentActions: DexterActionHistoryContext = DexterActionHistoryContext(recentActions: []),
+        currentTask: DexterTaskContext = DexterTaskContext(currentTaskDescription: nil),
+        persistentMemory: DexterPersistentMemoryContext = .empty,
+        attention: DexterAttentionContext? = nil
     ) {
-        self.screenCaptures = screenCaptures
-        self.pointerLocationInScreenSpace = pointerLocationInScreenSpace
-        self.userTranscript = userTranscript
+        self.userMessage = userMessage
+        let resolvedPointerLocation = pointer?.locationInScreenSpace ?? attention?.pointerLocationInScreenSpace ?? .zero
+        self.pointer = pointer ?? DexterPointerContext(locationInScreenSpace: resolvedPointerLocation)
+        self.display = display
+        self.screen = screen
+        self.activeApplication = activeApplication
+        self.activeWindow = activeWindow
+        self.selectedText = selectedText
+        self.clipboard = clipboard
+        self.conversation = conversation
+        self.recentActions = recentActions
+        self.currentTask = currentTask
+        self.persistentMemory = persistentMemory
+        self.attention = attention ?? DexterAttentionContext(
+            pointerLocationInScreenSpace: resolvedPointerLocation,
+            pointerLocationRelativeToDisplay: nil,
+            regionAroundPointerInScreenSpace: nil,
+            pointerLocationInPrimaryScreenshotPixels: nil,
+            regionAroundPointerInPrimaryScreenshotPixels: nil,
+            accessibilityHintAtPointer: DexterAccessibilityHintAtPointer(
+                roleDescription: nil,
+                title: nil,
+                valueDescription: nil,
+                availability: .notApplicable
+            ),
+            primaryDisplayIdentifier: display?.displayIdentifier
+        )
+    }
+
+    /// All screen captures from this invocation (empty when capture was skipped or denied).
+    var screenCaptures: [DexterScreenCaptureSnapshot] {
+        screen.allScreens
+    }
+
+    var pointerLocationInScreenSpace: CGPoint? {
+        pointer?.locationInScreenSpace
+    }
+
+    var userTranscript: String? {
+        userMessage.text
     }
 }
