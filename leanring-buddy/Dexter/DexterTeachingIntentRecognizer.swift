@@ -131,7 +131,7 @@ enum DexterTeachingIntentRecognizer {
     }
 
     private static func matchesExplainIntent(_ normalizedMessage: String) -> Bool {
-        if DexterPointerControlWorkflow.matchesPointerExplainIntent(normalizedMessage) {
+        if DexterPointerControlWorkflow.matchesPointerExplainIntent(normalizedUserMessage: normalizedMessage) {
             return true
         }
 

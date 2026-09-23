@@ -16,7 +16,7 @@ struct DexterModelGenerationOptions: Equatable {
     /// Passed through for screen-content permission bookkeeping in context assembly.
     var hasPersistedScreenContentGrant: Bool
 
-    init(
+    nonisolated init(
         screenCaptureOverride: [DexterScreenCaptureSnapshot]? = nil,
         includeSessionConversationHistory: Bool = true,
         hasPersistedScreenContentGrant: Bool = false
@@ -68,7 +68,7 @@ final class DexterOrchestrator {
         actionContextObserver: DexterActionContextObserver,
         taskStateStore: DexterTaskStateStore,
         demonstrationPhaseStore: DexterDemonstrationPhaseStore? = nil,
-        demonstrationSessionStore: DexterDemonstrationSessionStore = DexterDemonstrationSessionStore()
+        demonstrationSessionStore: DexterDemonstrationSessionStore? = nil
     ) {
         self.contextAssembler = contextAssembler
         self.modelProvider = modelProvider
@@ -82,7 +82,7 @@ final class DexterOrchestrator {
         self.actionContextObserver = actionContextObserver
         self.taskStateStore = taskStateStore
         self.demonstrationPhaseStore = demonstrationPhaseStore
-        self.demonstrationSessionStore = demonstrationSessionStore
+        self.demonstrationSessionStore = demonstrationSessionStore ?? DexterDemonstrationSessionStore()
     }
 
     var actionPermissionSettings: DexterActionPermissionSettings {
@@ -376,7 +376,7 @@ enum DexterOrchestratorFactory {
         workerBaseURL: String,
         modelIdentifier: String,
         demonstrationPhaseStore: DexterDemonstrationPhaseStore? = nil,
-        demonstrationSessionStore: DexterDemonstrationSessionStore = DexterDemonstrationSessionStore()
+        demonstrationSessionStore: DexterDemonstrationSessionStore? = nil
     ) -> DexterOrchestrator {
         let claudeAPI = ClaudeAPI(proxyURL: "\(workerBaseURL)/chat", model: modelIdentifier)
         let modelProvider = ClaudeModelProvider(claudeAPI: claudeAPI)
@@ -411,7 +411,7 @@ enum DexterOrchestratorFactory {
             actionContextObserver: actionContextObserver,
             taskStateStore: taskStateStore,
             demonstrationPhaseStore: demonstrationPhaseStore,
-            demonstrationSessionStore: demonstrationSessionStore
+            demonstrationSessionStore: demonstrationSessionStore ?? DexterDemonstrationSessionStore()
         )
     }
 }
