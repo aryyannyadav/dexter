@@ -53,7 +53,15 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1026 | Central UI/voice state machine. Owns dictation, shortcut monitoring, overlay, TTS, and onboarding. Delegates context + model + session memory to `DexterOrchestrator`. |
+| `Dexter/DexterOrchestrator.swift` | ~150 | Coordinates `ContextProvider`, `ModelProvider`, `MemoryStore`, `PermissionManager`, `AgentRuntime`, and `ActionVerifier`. |
+| `Dexter/ModelProvider.swift` | ~80 | Model abstraction; `ClaudeModelProvider` wraps `ClaudeAPI`. |
+| `Dexter/MemoryStore.swift` | ~55 | Session conversation memory (`SessionMemoryStore`). |
+| `Dexter/DexterContext.swift` | ~55 | Context snapshot types. |
+| `Dexter/ContextProvider.swift` | ~30 | `ScreenCaptureContextProvider` for screenshots. |
+| `Dexter/PermissionManager.swift` | ~45 | macOS permission snapshot + request helpers. |
+| `Dexter/AgentRuntime.swift` | ~45 | Agent execution boundary; `OpenClawAgentRuntimeAdapter` stub. |
+| `Dexter/ActionVerifier.swift` | ~40 | Post-action verification (`UncertainActionVerifier`). |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
