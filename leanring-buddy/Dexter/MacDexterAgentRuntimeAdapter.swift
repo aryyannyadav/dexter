@@ -57,9 +57,13 @@ final class MacDexterAgentRuntimeAdapter: AgentRuntime {
             )
         }
 
+        let failureMessage = DexterInstalledApplicationLauncher.isApplicationInstalled(named: applicationName)
+            ? "I couldn't open \(applicationName)."
+            : "\(applicationName) isn't installed on this Mac."
+
         return AgentActionResult(
             reportedSuccess: false,
-            message: "Could not launch \(applicationName). Install it or check the application name.",
+            message: failureMessage,
             executionStatus: .failed,
             runtimeTaskIdentifier: nil,
             rawOutput: nil
@@ -79,6 +83,10 @@ final class MacDexterAgentRuntimeAdapter: AgentRuntime {
 
         if normalizedName == "safari" {
             return NSWorkspace.shared.launchApplication("Safari")
+        }
+
+        if DexterInstalledApplicationLauncher.isApplicationInstalled(named: applicationName) {
+            return DexterInstalledApplicationLauncher.launchApplication(named: applicationName)
         }
 
         return false
@@ -190,7 +198,7 @@ enum MacDexterKeyboardPasteUtility {
     }
 }
 
-/// Tries MacDexter first for allowlisted demo actions; falls back to OpenClaw when MacDexter cannot handle the request.
+/// Routes computer actions through OpenClaw when the local node is connected; MacDexter handles allowlisted demo fallbacks.
 final class CompositeDexterAgentRuntime: AgentRuntime {
     let runtimeName = "CompositeDexter"
 
@@ -212,6 +220,23 @@ final class CompositeDexterAgentRuntime: AgentRuntime {
     }
 
     func executeAction(_ actionRequest: AgentActionRequest) async throws -> AgentActionResult {
+        if OpenClawRuntimeAllowlist.prefersOpenClawRuntime(actionRequest),
+           OpenClawRuntimeAllowlist.isDexterSupportedAction(actionRequest) {
+            if openClawRuntime.isAvailable() {
+                let result = try await openClawRuntime.executeAction(actionRequest)
+                currentExecutionStatus = openClawRuntime.currentExecutionStatus
+                return result
+            }
+
+            if MacDexterRuntimeAllowlist.isSupported(actionRequest) {
+                let result = try await macRuntime.executeAction(actionRequest)
+                currentExecutionStatus = macRuntime.currentExecutionStatus
+                return result
+            }
+
+            return try await openClawRuntime.executeAction(actionRequest)
+        }
+
         if MacDexterRuntimeAllowlist.isSupported(actionRequest) {
             let result = try await macRuntime.executeAction(actionRequest)
             currentExecutionStatus = macRuntime.currentExecutionStatus

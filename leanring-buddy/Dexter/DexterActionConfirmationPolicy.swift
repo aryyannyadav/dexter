@@ -120,11 +120,11 @@ enum DexterActionRiskClassifier {
         switch actionType {
         case .inspectScreen, .explainContent:
             return .readOnly
-        case .openApplication, .openURL, .scroll, .navigate:
+        case .openApplication, .focusApplication, .openURL, .scroll, .navigate:
             return .lowRisk
         case .typeText, .select:
             return .moderateRisk
-        case .click, .keyboardShortcut, .runTask:
+        case .quitApplication, .click, .keyboardShortcut, .runTask:
             return .highRisk
         }
     }

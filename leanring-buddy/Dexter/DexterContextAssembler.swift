@@ -8,6 +8,7 @@ import Foundation
 
 enum DexterScreenCaptureMode: Equatable {
     case captureAllDisplaysIfPermitted
+    case captureCursorDisplayIfPermitted
     case useOverride([DexterScreenCaptureSnapshot])
     case skip
 }
@@ -18,19 +19,22 @@ struct DexterContextAssemblyRequest: Equatable {
     let includeRecentConversation: Bool
     let recentConversationLimit: Int
     let hasPersistedScreenContentGrant: Bool
+    let pointerLocationInScreenSpaceOverride: CGPoint?
 
     init(
         userMessage: String,
         screenCaptureMode: DexterScreenCaptureMode = .captureAllDisplaysIfPermitted,
         includeRecentConversation: Bool = true,
         recentConversationLimit: Int = 10,
-        hasPersistedScreenContentGrant: Bool = false
+        hasPersistedScreenContentGrant: Bool = false,
+        pointerLocationInScreenSpaceOverride: CGPoint? = nil
     ) {
         self.userMessage = userMessage
         self.screenCaptureMode = screenCaptureMode
         self.includeRecentConversation = includeRecentConversation
         self.recentConversationLimit = recentConversationLimit
         self.hasPersistedScreenContentGrant = hasPersistedScreenContentGrant
+        self.pointerLocationInScreenSpaceOverride = pointerLocationInScreenSpaceOverride
     }
 }
 
@@ -63,7 +67,7 @@ final class DexterContextAssembler {
         )
 
         let pointerLocationInScreenSpace = await MainActor.run {
-            NSEvent.mouseLocation
+            request.pointerLocationInScreenSpaceOverride ?? NSEvent.mouseLocation
         }
 
         async let screenContext = buildScreenContext(
@@ -150,7 +154,28 @@ final class DexterContextAssembler {
             )
 
         case .captureAllDisplaysIfPermitted:
+            return await captureScreensIfPermitted(
+                permissionSnapshot: permissionSnapshot,
+                pointerLocationInScreenSpace: pointerLocationInScreenSpace,
+                scope: .allDisplays
+            )
+
+        case .captureCursorDisplayIfPermitted:
+            return await captureScreensIfPermitted(
+                permissionSnapshot: permissionSnapshot,
+                pointerLocationInScreenSpace: pointerLocationInScreenSpace,
+                scope: .cursorDisplayOnly
+            )
+        }
+    }
+
+    private func captureScreensIfPermitted(
+        permissionSnapshot: DexterPermissionSnapshot,
+        pointerLocationInScreenSpace: CGPoint,
+        scope: DexterScreenCaptureScope
+    ) async -> DexterScreenContext {
             guard permissionSnapshot.hasScreenRecordingPermission else {
+                DexterDiagnosticLog.vision("screen capture skipped — Screen Recording permission missing")
                 return DexterScreenContext(
                     primaryScreenshot: nil,
                     allScreens: [],
@@ -158,10 +183,21 @@ final class DexterContextAssembler {
                 )
             }
 
+            DexterDiagnosticLog.vision("screen capture started (scope: \(scope == .cursorDisplayOnly ? "cursor display" : "all displays"))")
+            DexterVisionTiming.markCaptureStarted()
             do {
-                let captures = try await captureScreensOnMainActor(
-                    pointerLocationInScreenSpace: pointerLocationInScreenSpace
-                )
+                let captureReason = "visual-request"
+                let captures = try await DexterAsyncTimeout.withTimeout(seconds: 45) { [self] in
+                    try await captureScreensOnMainActor(
+                        pointerLocationInScreenSpace: pointerLocationInScreenSpace,
+                        scope: scope,
+                        diagnosticReason: captureReason
+                    )
+                }
+                DexterVisionTiming.markCaptureCompleted()
+                DexterDiagnosticLog.vision("screen capture finished (\(captures.count) image(s))")
+                DexterScreenCaptureDiagnostics.logCaptureComplete(reason: captureReason, imageCount: captures.count)
+                DexterTurnTrace.log("screenshot captured (\(captures.count) image(s))")
                 let snapshots = captures.map { DexterScreenCaptureSnapshot(companionScreenCapture: $0) }
                 let primaryScreenshot = snapshots.first(where: { $0.isCursorScreen }) ?? snapshots.first
                 return DexterScreenContext(
@@ -169,26 +205,41 @@ final class DexterContextAssembler {
                     allScreens: snapshots,
                     captureAvailability: .available
                 )
+            } catch is DexterModelRequestTimeoutError {
+                DexterDiagnosticLog.vision("screen capture timed out")
+                return DexterScreenContext(
+                    primaryScreenshot: nil,
+                    allScreens: [],
+                    captureAvailability: .unavailable(errorDescription: "Screen capture timed out")
+                )
             } catch {
+                DexterDiagnosticLog.vision("screen capture failed")
                 return DexterScreenContext(
                     primaryScreenshot: nil,
                     allScreens: [],
                     captureAvailability: .unavailable(errorDescription: error.localizedDescription)
                 )
             }
-        }
     }
 
-    private func captureScreensOnMainActor(pointerLocationInScreenSpace: CGPoint) async throws -> [CompanionScreenCapture] {
+    private func captureScreensOnMainActor(
+        pointerLocationInScreenSpace: CGPoint,
+        scope: DexterScreenCaptureScope,
+        diagnosticReason: String
+    ) async throws -> [CompanionScreenCapture] {
         if Thread.isMainThread {
             return try await screenCaptureProvider.captureScreensForPointerAttention(
-                pointerLocationInScreenSpace: pointerLocationInScreenSpace
+                pointerLocationInScreenSpace: pointerLocationInScreenSpace,
+                scope: scope,
+                diagnosticReason: diagnosticReason
             )
         }
 
         return try await Task { @MainActor in
             try await screenCaptureProvider.captureScreensForPointerAttention(
-                pointerLocationInScreenSpace: pointerLocationInScreenSpace
+                pointerLocationInScreenSpace: pointerLocationInScreenSpace,
+                scope: scope,
+                diagnosticReason: diagnosticReason
             )
         }.value
     }

@@ -35,13 +35,14 @@ final class DexterVoiceCoordinator: ObservableObject {
     func bindDictationManager(_ dictationManager: BuddyDictationManager) {
         dictationStateCancellable = dictationManager.$isRecordingFromKeyboardShortcut
             .combineLatest(
+                dictationManager.$isRecordingFromMicrophoneButton,
                 dictationManager.$isFinalizingTranscript,
                 dictationManager.$isPreparingToRecord
             )
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] isRecording, isFinalizing, isPreparing in
+            .sink { [weak self] isRecordingFromShortcut, isRecordingFromMicButton, isFinalizing, isPreparing in
                 self?.applyDictationSignals(
-                    isRecording: isRecording,
+                    isRecording: isRecordingFromShortcut || isRecordingFromMicButton,
                     isFinalizing: isFinalizing,
                     isPreparing: isPreparing
                 )
@@ -92,15 +93,11 @@ final class DexterVoiceCoordinator: ObservableObject {
             return
         }
 
-        if isFinalizing || isPreparing {
-            interactionState = .thinking
-        } else if isRecording {
+        // Chat "thinking" is owned by the orchestrator response task — not STT finalize/prepare.
+        if isRecording || isPreparing {
             interactionState = .listening
-        } else if interactionState == .listening || interactionState == .thinking {
-            // Release without finalize path is handled by the response pipeline.
-            if interactionState == .listening {
-                interactionState = .idle
-            }
+        } else if interactionState == .listening {
+            interactionState = .idle
         }
     }
 }

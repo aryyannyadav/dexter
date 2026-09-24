@@ -458,7 +458,8 @@ struct leanring_buddyTests {
                     action: DexterActionFactory.openApplication(named: "Safari"),
                     spokenSummary: "unused",
                     pendingConfirmation: nil,
-                    verificationReport: nil
+                    verificationReport: nil,
+                    turnRecord: nil
                 )
             }
         )
@@ -473,7 +474,8 @@ struct leanring_buddyTests {
                     action: DexterActionFactory.openApplication(named: "Safari"),
                     spokenSummary: "unused",
                     pendingConfirmation: nil,
-                    verificationReport: nil
+                    verificationReport: nil,
+                    turnRecord: nil
                 )
             }
         )
@@ -602,8 +604,8 @@ struct leanring_buddyTests {
         #expect(actionStore.recentActions(limit: 1).first?.state == .completed)
     }
 
-    @Test func actionVerificationEngineRejectsRuntimeSuccessWhenSafariNotFrontmost() async throws {
-        let action = DexterActionFactory.openApplication(named: "Safari")
+    @Test @MainActor func actionVerificationEngineRejectsRuntimeSuccessWhenApplicationIsNotRunning() async throws {
+        let action = DexterActionFactory.openApplication(named: "DexterVerificationFakeApplication")
         let observationAfter = DexterActionObservationSnapshot(
             activeApplicationBundleIdentifier: "com.apple.finder",
             activeApplicationLocalizedName: "Finder",
@@ -620,17 +622,17 @@ struct leanring_buddyTests {
             observationAfter: observationAfter,
             executionResult: AgentActionResult(
                 reportedSuccess: true,
-                message: "Safari opened.",
+                message: "Fake application opened.",
                 executionStatus: .succeeded,
                 runtimeTaskIdentifier: nil,
                 rawOutput: nil
             )
         )
         #expect(report.status == .failed)
-        #expect(report.summary.contains("Verification failed"))
+        #expect(report.summary.contains("does not appear to be running"))
     }
 
-    @Test func actionVerificationEngineTreatsWindowTitleOnlyClickChangeAsUncertain() async throws {
+    @Test @MainActor func actionVerificationEngineTreatsWindowTitleOnlyClickChangeAsUncertain() async throws {
         let action = DexterActionFactory.click(x: "10", y: "20", label: "Go")
         let before = DexterActionObservationSnapshot(
             activeApplicationBundleIdentifier: "com.apple.Safari",
@@ -664,7 +666,7 @@ struct leanring_buddyTests {
                 rawOutput: nil
             )
         )
-        #expect(report.status == .uncertain)
+        #expect(report.status == .notVerified)
     }
 
     @Test func safeRetryPolicyAllowsOpenApplicationButNotClick() async throws {
@@ -674,7 +676,7 @@ struct leanring_buddyTests {
         #expect(!DexterActionSafeRetryPolicy.canAttemptSafeRetry(for: clickAction))
     }
 
-    @Test func realOpenSafariVerificationAfterWorkspaceLaunch() async throws {
+    @Test @MainActor func realOpenSafariVerificationAfterWorkspaceLaunch() async throws {
         guard AXIsProcessTrusted() else {
             return
         }
@@ -701,10 +703,28 @@ struct leanring_buddyTests {
                 rawOutput: nil
             )
         )
-        #expect(report.status == .success)
+        #expect(report.status == .verified || report.status == .partiallyVerified)
     }
 
-    @Test func realOpenCalculatorVerificationAfterWorkspaceLaunch() async throws {
+    @Test @MainActor func quitApplicationVerificationWhenProcessIsNotRunning() async throws {
+        let action = DexterActionFactory.quitApplication(named: "DexterVerificationFakeApplication")
+        let report = DexterActionVerificationEngine.verify(
+            action: action,
+            observationBefore: .empty,
+            observationAfter: .empty,
+            executionResult: AgentActionResult(
+                reportedSuccess: true,
+                message: "runtime claimed success",
+                executionStatus: .succeeded,
+                runtimeTaskIdentifier: nil,
+                rawOutput: nil
+            )
+        )
+        #expect(report.status == .verified)
+        #expect(report.summary.contains("closed"))
+    }
+
+    @Test @MainActor func realOpenCalculatorVerificationAfterWorkspaceLaunch() async throws {
         guard AXIsProcessTrusted() else {
             return
         }
@@ -731,11 +751,11 @@ struct leanring_buddyTests {
                 rawOutput: nil
             )
         )
-        #expect(report.status == .success)
+        #expect(report.status == .verified || report.status == .partiallyVerified)
     }
 
     @Test func typedActionFactoriesCoverSupportedActionTypes() async throws {
-        #expect(DexterActionType.allCases.count == 11)
+        #expect(DexterActionType.allCases.count == 13)
         #expect(DexterActionFactory.inspectScreen().riskLevel == .readOnly)
         #expect(DexterActionFactory.openApplication(named: "Safari").riskLevel == .lowRisk)
         #expect(DexterActionFactory.openURL("https://example.com").riskLevel == .lowRisk)
@@ -1085,7 +1105,7 @@ struct leanring_buddyTests {
         #expect(typedAction.parameters["label"] == "Wi-Fi")
     }
 
-    @Test func actionVerificationEngineVerifiesPointerClickWhenValueChanges() async throws {
+    @Test @MainActor func actionVerificationEngineVerifiesPointerClickWhenValueChanges() async throws {
         let action = DexterActionFactory.click(x: "10", y: "20", label: "Wi-Fi")
         let before = DexterActionObservationSnapshot(
             activeApplicationBundleIdentifier: "com.apple.systempreferences",
@@ -1119,11 +1139,11 @@ struct leanring_buddyTests {
                 rawOutput: "clicked"
             )
         )
-        #expect(report.status == .success)
+        #expect(report.status == .verified)
         #expect(report.summary.contains("state at your pointer changed"))
     }
 
-    @Test func typeTextPasteAttemptRemainsUncertainWithoutEditorContentVerification() async throws {
+    @Test @MainActor func typeTextPasteAttemptRemainsUncertainWithoutEditorContentVerification() async throws {
         let action = DexterActionFactory.typeText("let x = 1")
         let observationAfter = DexterActionObservationSnapshot(
             activeApplicationBundleIdentifier: "com.microsoft.VSCode",
@@ -1151,7 +1171,7 @@ struct leanring_buddyTests {
             )
         )
 
-        #expect(report.status == .uncertain)
+        #expect(report.status == .notVerified)
     }
 
     @Test func workerProxyClientAppliesOptionalAuthenticationHeader() async throws {
@@ -1179,10 +1199,10 @@ struct leanring_buddyTests {
     @Test func verificationUncertainDoesNotMarkActionCompleted() async throws {
         let verifier = StubActionVerifier()
         verifier.nextOutcome = ActionVerificationOutcome(
-            status: .uncertain,
+            status: .notVerified,
             summary: "Could not confirm the UI change.",
             report: DexterActionVerificationReport(
-                status: .uncertain,
+                status: .notVerified,
                 summary: "Could not confirm the UI change.",
                 intendedStateDescription: "test",
                 observedStateDescription: "test"
@@ -1308,7 +1328,11 @@ private final class StubPermissionManager: PermissionManager {
 }
 
 private final class FailingScreenCaptureProvider: DexterScreenCaptureProviding {
-    func captureScreensForPointerAttention(pointerLocationInScreenSpace: CGPoint) async throws -> [CompanionScreenCapture] {
+    func captureScreensForPointerAttention(
+        pointerLocationInScreenSpace: CGPoint,
+        scope: DexterScreenCaptureScope,
+        diagnosticReason: String
+    ) async throws -> [CompanionScreenCapture] {
         throw NSError(domain: "test", code: -1, userInfo: [NSLocalizedDescriptionKey: "capture should not run"])
     }
 }

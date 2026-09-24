@@ -121,7 +121,9 @@ class WindowPositionManager {
             return .alreadyGranted
         case .systemPrompt:
             hasAttemptedScreenRecordingSystemPromptDuringCurrentLaunch = true
-            _ = CGRequestScreenCaptureAccess()
+            DexterPermissionDiagnostics.logScreenRecordingRequestAccessInvoked()
+            let granted = CGRequestScreenCaptureAccess()
+            DexterPermissionDiagnostics.logScreenRecordingRequestAccessResult(granted)
         case .systemSettings:
             openScreenRecordingSettings()
         }

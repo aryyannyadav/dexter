@@ -20,8 +20,12 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
     let displayName = "AssemblyAI"
     let requiresSpeechRecognitionPermission = false
 
-    var isConfigured: Bool { true }
-    var unavailableExplanation: String? { nil }
+    var isConfigured: Bool { DexterWorkerProxyClient.isWorkerBaseURLConfigured }
+    var unavailableExplanation: String? {
+        isConfigured
+            ? nil
+            : "AssemblyAI worker endpoint is not configured. Set DexterWorkerBaseURL in Info.plist (see Secrets.xcconfig.example)."
+    }
 
     /// Single long-lived URLSession shared across all streaming sessions.
     /// Creating and invalidating a URLSession per session corrupts the OS
@@ -57,6 +61,13 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
 
     /// Calls the Cloudflare Worker to get a short-lived AssemblyAI token.
     private func fetchTemporaryToken() async throws -> String {
+        guard DexterWorkerProxyClient.isWorkerBaseURLConfigured else {
+            print("AssemblyAI worker endpoint is not configured (DexterWorkerBaseURL missing or still placeholder)")
+            throw AssemblyAIStreamingTranscriptionProviderError(
+                message: "AssemblyAI worker endpoint is not configured. Set DexterWorkerBaseURL in Info.plist (see Secrets.xcconfig.example)."
+            )
+        }
+
         var request = URLRequest(url: DexterWorkerProxyClient.url(path: "/transcribe-token"))
         request.httpMethod = "POST"
         DexterWorkerProxyClient.applyAuthenticationHeaders(to: &request)

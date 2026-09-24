@@ -32,9 +32,13 @@ enum DexterTeachingModeInstructions {
                 modeName: "TEACH",
                 hasScreenContext: hasScreenContext,
                 emphasis: """
-                build understanding over time; keep the first spoken turn concise but complete enough to act on.
-                end your response with exactly one machine-readable fix line on its own line: [DEXTER_FIX:corrected code or line here]
-                the fix line must contain only the text that should replace the erroneous code (no markdown fences).
+                give a structured explanation that fits on one screen of chat. use these sections in order (short headings or clear paragraphs):
+                1. What it is
+                2. Why it happened (or why it matters)
+                3. What the user should understand
+                4. A simple example (only if helpful)
+                5. What to do next (user actions only — do not claim you will click or change anything)
+                stay concise; no chain-of-thought; no markdown code fences unless a tiny example is essential.
                 """
             )
 

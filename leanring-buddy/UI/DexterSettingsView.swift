@@ -3,10 +3,17 @@
 //  leanring-buddy
 //
 
+import AVFoundation
 import SwiftUI
 
 struct DexterSettingsView: View {
     @ObservedObject var companionManager: CompanionManager
+    @ObservedObject var ollamaProvider: OllamaProvider
+
+    init(companionManager: CompanionManager) {
+        self.companionManager = companionManager
+        self.ollamaProvider = companionManager.ollamaAIProvider
+    }
 
     var body: some View {
         ScrollView {
@@ -36,11 +43,35 @@ struct DexterSettingsView: View {
                 }
 
                 settingsSection(title: "AI") {
-                    claudeModelRow
+                    ollamaSettingsBlock
 
-                    Divider().background(DS.Colors.borderSubtle)
+                    Button("Test Connection") {
+                        companionManager.testOllamaConnection()
+                    }
+                    .dsSecondaryButtonStyle()
+                    .pointerCursor()
+                }
 
-                    ollamaPlaceholderBlock
+                settingsSection(title: "Local actions") {
+                    HStack {
+                        settingsRowLabel("OpenClaw")
+                        Spacer()
+                        Text(companionManager.openClawGatewayStatusLine)
+                            .font(DexterIdentity.Typography.monoCaption())
+                            .foregroundColor(DS.Colors.textTertiary)
+                            .multilineTextAlignment(.trailing)
+                    }
+
+                    Button("Check OpenClaw Gateway") {
+                        companionManager.refreshOpenClawGatewayConnection()
+                    }
+                    .dsSecondaryButtonStyle()
+                    .pointerCursor()
+
+                    Text("Computer actions (for example opening Calculator) run through your local OpenClaw Gateway after Dexter permission checks. Chat and vision still use Ollama when OpenClaw is offline.")
+                        .font(DexterIdentity.Typography.body())
+                        .foregroundColor(DS.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 settingsSection(title: "Voice") {
@@ -69,6 +100,19 @@ struct DexterSettingsView: View {
                             .font(DexterIdentity.Typography.monoCaption())
                             .foregroundColor(DS.Colors.textTertiary)
                     }
+
+                    Picker("Mac voice", selection: Binding(
+                        get: { companionManager.preferredMacSpeechVoiceIdentifier ?? "" },
+                        set: { newValue in
+                            companionManager.preferredMacSpeechVoiceIdentifier = newValue.isEmpty ? nil : newValue
+                        }
+                    )) {
+                        Text("Automatic (best available)").tag("")
+                        ForEach(DexterMacSpeechVoiceSelector.availableEnglishVoices(), id: \.identifier) { voice in
+                            Text(voice.name).tag(voice.identifier)
+                        }
+                    }
+                    .pickerStyle(.menu)
                 }
 
                 settingsSection(title: "Context & Privacy") {
@@ -78,10 +122,15 @@ struct DexterSettingsView: View {
                 }
 
                 settingsSection(title: "Shortcuts") {
-                    Text("Hold Control + Option to talk to Dexter from anywhere.")
-                        .font(DexterIdentity.Typography.body())
-                        .foregroundColor(DS.Colors.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Hold Control + Option to talk to Dexter from anywhere.")
+                            .font(DexterIdentity.Typography.body())
+                            .foregroundColor(DS.Colors.textSecondary)
+                        Text("Press \(DexterPointInvokeShortcut.displayText) to capture what you're pointing at and open Dexter.")
+                            .font(DexterIdentity.Typography.body())
+                            .foregroundColor(DS.Colors.textSecondary)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
                 }
 
                 settingsSection(title: "About") {
@@ -105,28 +154,19 @@ struct DexterSettingsView: View {
         .background(DS.Colors.background)
     }
 
-    private var claudeModelRow: some View {
-        HStack {
-            settingsRowLabel("Cloud model")
-            Spacer()
-            HStack(spacing: 0) {
-                modelButton("Sonnet", id: "claude-sonnet-4-6")
-                modelButton("Opus", id: "claude-opus-4-6")
-            }
-            .background(RoundedRectangle(cornerRadius: 8).fill(DS.Colors.surface2))
-        }
-    }
-
-    private var ollamaPlaceholderBlock: some View {
+    private var ollamaSettingsBlock: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Local provider (coming soon)")
-                .font(DexterIdentity.Typography.sectionLabel())
-                .foregroundColor(DS.Colors.textTertiary)
+            settingsKeyValueRow(label: "Provider", value: ollamaProvider.providerName)
+            settingsKeyValueRow(label: "Endpoint", value: ollamaProvider.endpointDisplayString)
+            settingsKeyValueRow(label: "Model", value: ollamaProvider.configuredModelName)
+            settingsKeyValueRow(label: "Connection status", value: ollamaProvider.connectionStatus.userFacingLabel)
 
-            settingsKeyValueRow(label: "Provider", value: "Ollama")
-            settingsKeyValueRow(label: "Status", value: "Not connected")
-            settingsKeyValueRow(label: "Model", value: "Qwen3.5 9B")
-            settingsKeyValueRow(label: "Endpoint", value: "http://localhost:11434")
+            if ollamaProvider.connectionStatus == .modelUnavailable {
+                Text("Install \(ollamaProvider.configuredModelName) with the Ollama app or run: ollama pull \(ollamaProvider.configuredModelName)")
+                    .font(DexterIdentity.Typography.monoCaption())
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: DS.CornerRadius.medium).fill(DS.Colors.surface2))
@@ -134,18 +174,9 @@ struct DexterSettingsView: View {
             RoundedRectangle(cornerRadius: DS.CornerRadius.medium)
                 .stroke(DS.Colors.borderSubtle, lineWidth: 1)
         )
-    }
-
-    private func modelButton(_ label: String, id: String) -> some View {
-        let selected = companionManager.selectedModel == id
-        return Button(label) { companionManager.setSelectedModel(id) }
-            .font(DexterIdentity.Typography.monoCaption())
-            .foregroundColor(selected ? DexterIdentity.accent : DS.Colors.textTertiary)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(selected ? DexterIdentity.accentSubtle : Color.clear)
-            .buttonStyle(.plain)
-            .pointerCursor()
+        .onAppear {
+            companionManager.refreshOllamaConnectionStatus()
+        }
     }
 
     private func settingsSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {

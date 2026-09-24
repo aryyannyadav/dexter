@@ -66,10 +66,9 @@ enum DexterStructuredModelRequestBuilder {
         let structuredUserPrompt = sections.joined(separator: "\n\n")
 
         let images: [DexterModelImageInput]
-        if relevancePlan.includeScreenContext {
-            images = dexterContext.screenCaptures.map { capture in
-                imageInput(for: capture, attention: dexterContext.attention)
-            }
+        if relevancePlan.includeScreenContext,
+           let primaryScreenshot = dexterContext.screen.primaryScreenshot ?? dexterContext.screenCaptures.first {
+            images = [imageInput(for: primaryScreenshot, attention: dexterContext.attention)]
         } else {
             images = []
         }

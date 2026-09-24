@@ -10,6 +10,8 @@ enum DexterActionType: String, Equatable, CaseIterable {
     case inspectScreen = "InspectScreen"
     case explainContent = "ExplainContent"
     case openApplication = "OpenApplication"
+    case focusApplication = "FocusApplication"
+    case quitApplication = "QuitApplication"
     case openURL = "OpenURL"
     case click = "Click"
     case typeText = "TypeText"
@@ -99,15 +101,51 @@ enum DexterActionFactory {
     }
 
     static func openApplication(named applicationName: String, contextSummary: String? = nil) -> DexterAction {
+        applicationLifecycleAction(
+            type: .openApplication,
+            applicationName: applicationName,
+            contextSummary: contextSummary,
+            riskLevel: .lowRisk,
+            humanReadableDescription: "Open \(applicationName)."
+        )
+    }
+
+    static func focusApplication(named applicationName: String, contextSummary: String? = nil) -> DexterAction {
+        applicationLifecycleAction(
+            type: .focusApplication,
+            applicationName: applicationName,
+            contextSummary: contextSummary,
+            riskLevel: .lowRisk,
+            humanReadableDescription: "Bring \(applicationName) to the front."
+        )
+    }
+
+    static func quitApplication(named applicationName: String, contextSummary: String? = nil) -> DexterAction {
+        applicationLifecycleAction(
+            type: .quitApplication,
+            applicationName: applicationName,
+            contextSummary: contextSummary,
+            riskLevel: .highRisk,
+            humanReadableDescription: "Quit \(applicationName)."
+        )
+    }
+
+    private static func applicationLifecycleAction(
+        type: DexterActionType,
+        applicationName: String,
+        contextSummary: String?,
+        riskLevel: DexterActionRiskLevel,
+        humanReadableDescription: String
+    ) -> DexterAction {
         var parameters = ["applicationName": applicationName]
         if let contextSummary {
             parameters["contextSummary"] = contextSummary
         }
         return DexterAction(
-            type: .openApplication,
+            type: type,
             parameters: parameters,
-            riskLevel: .lowRisk,
-            humanReadableDescription: "Open \(applicationName)."
+            riskLevel: riskLevel,
+            humanReadableDescription: humanReadableDescription
         )
     }
 

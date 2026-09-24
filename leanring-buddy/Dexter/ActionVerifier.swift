@@ -11,7 +11,7 @@ struct ActionVerificationOutcome: Equatable {
     let report: DexterActionVerificationReport
 
     var wasSuccessful: Bool {
-        status == .success
+        status == .verified || status == .partiallyVerified
     }
 }
 

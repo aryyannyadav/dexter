@@ -29,7 +29,11 @@ enum CompanionScreenCaptureUtility {
     /// full context across multiple monitors.
     /// Captures all displays, prioritizing the display that contains `pointerLocationInScreenSpace`.
     /// When nil, uses the current mouse location at capture time.
-    static func captureAllScreensAsJPEG(pointerLocationInScreenSpace: CGPoint? = nil) async throws -> [CompanionScreenCapture] {
+    static func captureAllScreensAsJPEG(
+        pointerLocationInScreenSpace: CGPoint? = nil,
+        diagnosticReason: String = "screen-capture"
+    ) async throws -> [CompanionScreenCapture] {
+        DexterScreenCaptureDiagnostics.logCaptureStart(reason: diagnosticReason)
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
 
         guard !content.displays.isEmpty else {
@@ -130,5 +134,23 @@ enum CompanionScreenCaptureUtility {
         }
 
         return capturedScreens
+    }
+
+    /// Captures only the display that contains the pointer (or the primary sorted display).
+    static func captureCursorDisplayAsJPEG(
+        pointerLocationInScreenSpace: CGPoint? = nil,
+        diagnosticReason: String = "visual-request"
+    ) async throws -> [CompanionScreenCapture] {
+        let allCaptures = try await captureAllScreensAsJPEG(
+            pointerLocationInScreenSpace: pointerLocationInScreenSpace,
+            diagnosticReason: diagnosticReason
+        )
+        if let cursorCapture = allCaptures.first(where: { $0.isCursorScreen }) {
+            return [cursorCapture]
+        }
+        if let firstCapture = allCaptures.first {
+            return [firstCapture]
+        }
+        return allCaptures
     }
 }

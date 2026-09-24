@@ -24,13 +24,9 @@ enum DexterActionPlanner {
 
         let normalizedMessage = normalize(userMessage)
 
-        if let applicationName = openApplicationName(from: normalizedMessage) {
-            return .action(
-                DexterActionFactory.openApplication(
-                    named: applicationName,
-                    contextSummary: contextSummary(from: context)
-                )
-            )
+        if let lifecycleIntent = DexterApplicationLifecycleIntentParser.parse(from: normalizedMessage) {
+            let plannedAction = action(for: lifecycleIntent, context: context)
+            return .action(plannedAction)
         }
 
         if matchesFixItIntent(normalizedMessage) {
@@ -51,25 +47,20 @@ enum DexterActionPlanner {
         }
 
         return .unsupported(
-            message: "Dexter can explain what you're pointing at, open Safari or VS Code, apply a taught code fix, or click the control under your pointer (say enable it)."
+            message: "Dexter can open, focus, or quit applications through OpenClaw, explain what you're pointing at, apply a taught code fix, or click the control under your pointer."
         )
     }
 
-    private static func openApplicationName(from normalizedMessage: String) -> String? {
-        let openPhrases = [
-            "open vscode",
-            "open vs code",
-            "open visual studio code",
-            "launch vscode",
-            "open safari",
-            "open the safari app",
-            "please open safari",
-            "open safari for me"
-        ]
-        guard openPhrases.contains(where: { normalizedMessage.contains($0) || normalizedMessage == $0 }) else {
-            return nil
+    private static func action(for lifecycleIntent: DexterApplicationLifecycleIntent, context: DexterContext) -> DexterAction {
+        let summary = contextSummary(from: context)
+        switch lifecycleIntent.operation {
+        case .launch:
+            return DexterActionFactory.openApplication(named: lifecycleIntent.applicationName, contextSummary: summary)
+        case .focus:
+            return DexterActionFactory.focusApplication(named: lifecycleIntent.applicationName, contextSummary: summary)
+        case .quit:
+            return DexterActionFactory.quitApplication(named: lifecycleIntent.applicationName, contextSummary: summary)
         }
-        return DexterDemoApplicationNames.canonicalName(for: normalizedMessage)
     }
 
     private static func matchesFixItIntent(_ normalizedMessage: String) -> Bool {

@@ -11,13 +11,14 @@ import AVFoundation
 import Foundation
 
 @MainActor
-final class ElevenLabsTTSClient {
+final class ElevenLabsTTSClient: NSObject {
     private let proxyURL: URL
     private let session: URLSession
 
     /// The audio player for the current TTS playback. Kept alive so the
     /// audio finishes playing even if the caller doesn't hold a reference.
     private var audioPlayer: AVAudioPlayer?
+    private var playbackDelegate: ElevenLabsAudioPlaybackDelegate?
 
     init(proxyURL: String) {
         self.proxyURL = URL(string: proxyURL)!
@@ -28,7 +29,7 @@ final class ElevenLabsTTSClient {
         self.session = URLSession(configuration: configuration)
     }
 
-    /// Sends `text` to ElevenLabs TTS and plays the resulting audio.
+    /// Sends `text` to ElevenLabs TTS and plays the resulting audio through completion.
     /// Throws on network or decoding errors. Cancellation-safe.
     func speakText(_ text: String) async throws {
         var request = URLRequest(url: proxyURL)
@@ -48,6 +49,8 @@ final class ElevenLabsTTSClient {
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        DexterDiagnosticLog.tts("synthesis started")
+
         let (data, response) = try await session.data(for: request)
 
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -63,10 +66,29 @@ final class ElevenLabsTTSClient {
 
         try Task.checkCancellation()
 
+        DexterDiagnosticLog.tts("audio received")
+
         let player = try AVAudioPlayer(data: data)
         self.audioPlayer = player
-        player.play()
-        print("🔊 ElevenLabs TTS: playing \(data.count / 1024)KB audio")
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            let delegate = ElevenLabsAudioPlaybackDelegate(continuation: continuation)
+            playbackDelegate = delegate
+            player.delegate = delegate
+            DexterDiagnosticLog.tts("playback started")
+            guard player.play() else {
+                continuation.resume(throwing: NSError(
+                    domain: "ElevenLabsTTS",
+                    code: -2,
+                    userInfo: [NSLocalizedDescriptionKey: "Failed to start audio playback"]
+                ))
+                return
+            }
+        }
+
+        DexterDiagnosticLog.tts("playback completed")
+        playbackDelegate = nil
+        audioPlayer = nil
     }
 
     /// Whether TTS audio is currently playing back.
@@ -78,5 +100,51 @@ final class ElevenLabsTTSClient {
     func stopPlayback() {
         audioPlayer?.stop()
         audioPlayer = nil
+        playbackDelegate?.cancel()
+        playbackDelegate = nil
+    }
+}
+
+@MainActor
+private final class ElevenLabsAudioPlaybackDelegate: NSObject, AVAudioPlayerDelegate {
+    private var continuation: CheckedContinuation<Void, Error>?
+
+    init(continuation: CheckedContinuation<Void, Error>) {
+        self.continuation = continuation
+    }
+
+    func cancel() {
+        if let continuation {
+            continuation.resume(throwing: CancellationError())
+            self.continuation = nil
+        }
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            guard let continuation else { return }
+            if flag {
+                continuation.resume()
+            } else {
+                continuation.resume(throwing: NSError(
+                    domain: "ElevenLabsTTS",
+                    code: -3,
+                    userInfo: [NSLocalizedDescriptionKey: "Audio playback ended unsuccessfully"]
+                ))
+            }
+            self.continuation = nil
+        }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor in
+            guard let continuation else { return }
+            continuation.resume(throwing: error ?? NSError(
+                domain: "ElevenLabsTTS",
+                code: -4,
+                userInfo: [NSLocalizedDescriptionKey: "Audio decode error"]
+            ))
+            self.continuation = nil
+        }
     }
 }

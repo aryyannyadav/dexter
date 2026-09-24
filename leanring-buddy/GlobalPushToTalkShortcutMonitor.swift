@@ -14,6 +14,7 @@ import Foundation
 
 final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     let shortcutTransitionPublisher = PassthroughSubject<BuddyPushToTalkShortcut.ShortcutTransition, Never>()
+    let pointInvokePublisher = PassthroughSubject<Void, Never>()
 
     private var globalEventTap: CFMachPort?
     private var globalEventTapRunLoopSource: CFRunLoopSource?
@@ -109,6 +110,16 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         }
 
         let eventKeyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+
+        if DexterPointInvokeShortcut.shouldTriggerPointInvoke(
+            for: eventType,
+            keyCode: eventKeyCode,
+            modifierFlagsRawValue: event.flags.rawValue
+        ) {
+            pointInvokePublisher.send()
+            return Unmanaged.passUnretained(event)
+        }
+
         let shortcutTransition = BuddyPushToTalkShortcut.shortcutTransition(
             for: eventType,
             keyCode: eventKeyCode,

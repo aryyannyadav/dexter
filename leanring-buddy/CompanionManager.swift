@@ -9,6 +9,7 @@
 
 import AVFoundation
 import Combine
+import CoreGraphics
 import Foundation
 import PostHog
 import ScreenCaptureKit
@@ -21,11 +22,40 @@ final class CompanionManager: ObservableObject {
     var voiceInteractionState: DexterVoiceInteractionState {
         dexterVoiceCoordinator.interactionState
     }
+
+    /// Microphone button UI only — not coupled to chat “thinking” or screen context.
+    var microphoneButtonInteractionState: DexterVoiceInteractionState {
+        switch microphoneRuntimeState {
+        case .listening:
+            return .listening
+        case .starting, .processing:
+            return .thinking
+        case .idle, .error:
+            return .idle
+        }
+    }
+
+    var microphoneButtonShowsError: Bool {
+        if microphonePermissionState == .denied || microphonePermissionState == .unavailable {
+            return true
+        }
+        guard microphoneRuntimeState == .error else { return false }
+        guard let microphoneInputErrorMessage, !microphoneInputErrorMessage.isEmpty else { return false }
+        let normalizedMessage = microphoneInputErrorMessage.lowercased()
+        if normalizedMessage.contains("cancelled") || normalizedMessage.contains("canceled") {
+            return false
+        }
+        return true
+    }
     @Published private(set) var lastTranscript: String?
     @Published private(set) var currentAudioPowerLevel: CGFloat = 0
     @Published private(set) var hasAccessibilityPermission = false
     @Published private(set) var hasScreenRecordingPermission = false
     @Published private(set) var hasMicrophonePermission = false
+    @Published private(set) var microphonePermissionState: DexterMicrophonePermissionState = .notDetermined
+    @Published private(set) var microphoneRuntimeState: DexterMicrophoneRuntimeState = .idle
+    @Published private(set) var microphoneInputErrorMessage: String?
+    @Published private(set) var screenPermissionState: DexterScreenPermissionState = .unknown
     @Published private(set) var hasScreenContentPermission = false
 
     /// Screen location (global AppKit coords) of a detected UI element the
@@ -75,10 +105,15 @@ final class CompanionManager: ObservableObject {
 
     private let dexterDemonstrationSessionStore = DexterDemonstrationSessionStore()
 
+    let ollamaAIProvider = OllamaProvider()
+
+    var dexterAIProvider: AIProvider {
+        ollamaAIProvider
+    }
+
     private lazy var dexterOrchestrator: DexterOrchestrator = {
         DexterOrchestratorFactory.makeDefault(
-            workerBaseURL: Self.workerBaseURL,
-            modelIdentifier: selectedModel,
+            ollamaProvider: ollamaAIProvider,
             demonstrationPhaseStore: dexterDemonstrationPhaseStore,
             demonstrationSessionStore: dexterDemonstrationSessionStore
         )
@@ -88,11 +123,19 @@ final class CompanionManager: ObservableObject {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
     }()
 
+    private lazy var dexterSpokenResponseService: DexterSpokenResponseService = {
+        DexterSpokenResponseService(
+            elevenLabsTTSClient: elevenLabsTTSClient,
+            voiceSettingsStore: dexterVoiceCoordinator.settingsStore
+        )
+    }()
+
     /// The currently running AI response task, if any. Cancelled when the user
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
 
     private var shortcutTransitionCancellable: AnyCancellable?
+    private var pointInvokeShortcutCancellable: AnyCancellable?
     private var voiceCoordinatorForwardCancellable: AnyCancellable?
     private var demonstrationPhaseForwardCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
@@ -124,20 +167,103 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var dexterChatMessages: [DexterChatMessage] = []
     @Published private(set) var dexterRecentConversations: [DexterRecentConversationSummary] = []
     @Published private(set) var dexterChatErrorMessage: String?
+    @Published private(set) var dexterSpokenResponseErrorMessage: String?
     var pendingMainWindowDestination: DexterMainWindowDestination = .chat
 
+    let openClawGatewayHealthMonitor = OpenClawGatewayHealthMonitor.shared
+
+    var openClawGatewayStatusLine: String {
+        openClawGatewayHealthMonitor.statusLine
+    }
+
+    @Published private(set) var hasVerifiedScreenCaptureProbe = false
+    @Published private(set) var microphoneHardwareInputDetected = false
+
     var isDexterScreenContextAvailable: Bool {
-        hasScreenRecordingPermission && hasAccessibilityPermission && hasScreenContentPermission
+        hasScreenRecordingPermission && hasVerifiedScreenCaptureProbe
+    }
+
+    @Published private(set) var dexterScreenContextUIState: DexterScreenContextUIState = .unavailable
+    @Published private(set) var lastDexterContextSnapshot: DexterContextSnapshot?
+
+    @Published private(set) var activePointInvokeSession: DexterPointInvokeSession?
+    @Published private(set) var isPreparingPointInvokeSession = false
+
+    func clearActivePointInvokeSession() {
+        activePointInvokeSession = nil
+    }
+
+    func refreshDexterScreenContextUIState(logScreenPermissionDiagnostics: Bool = false) {
+        let screenPreflightGranted = CGPreflightScreenCaptureAccess()
+        if logScreenPermissionDiagnostics {
+            DexterPermissionDiagnostics.logScreenRecordingPreflight(screenPreflightGranted)
+        }
+
+        if !screenPreflightGranted {
+            dexterScreenContextUIState = .permissionRequired
+            return
+        }
+
+        if hasVerifiedScreenCaptureProbe {
+            dexterScreenContextUIState = .ready
+        } else {
+            dexterScreenContextUIState = .unavailable
+        }
+    }
+
+    private var isScreenCaptureCapabilityProbeInFlight = false
+
+    /// One-shot Screen Recording verification. Not called from permission polling.
+    func runScreenCaptureCapabilityProbeIfNeeded() {
+        guard !isScreenCaptureCapabilityProbeInFlight else { return }
+        guard CGPreflightScreenCaptureAccess() else {
+            hasVerifiedScreenCaptureProbe = false
+            refreshDexterScreenContextUIState()
+            return
+        }
+        if hasVerifiedScreenCaptureProbe {
+            refreshDexterScreenContextUIState()
+            return
+        }
+
+        isScreenCaptureCapabilityProbeInFlight = true
+        Task {
+            let probeSucceeded = await DexterScreenCapturePermissionProbe.captureTestFrameSucceeded()
+            hasVerifiedScreenCaptureProbe = probeSucceeded
+            isScreenCaptureCapabilityProbeInFlight = false
+            refreshDexterScreenContextUIState()
+        }
+    }
+
+    var preferredMacSpeechVoiceIdentifier: String? {
+        get { dexterVoiceCoordinator.voiceSettings.preferredMacSpeechVoiceIdentifier }
+        set {
+            var updatedSettings = dexterVoiceCoordinator.voiceSettings
+            updatedSettings.preferredMacSpeechVoiceIdentifier = newValue
+            dexterVoiceCoordinator.voiceSettings = updatedSettings
+        }
     }
 
     var selectedModelDisplayName: String {
-        if selectedModel.localizedCaseInsensitiveContains("opus") {
-            return "Claude Opus"
+        ollamaAIProvider.configuredModelName
+    }
+
+    func testOllamaConnection() {
+        Task {
+            await ollamaAIProvider.testConnection()
         }
-        if selectedModel.localizedCaseInsensitiveContains("sonnet") {
-            return "Claude Sonnet"
+    }
+
+    func refreshOllamaConnectionStatus() {
+        Task {
+            await ollamaAIProvider.refreshConnectionStatus()
         }
-        return selectedModel
+    }
+
+    func refreshOpenClawGatewayConnection() {
+        Task {
+            await openClawGatewayHealthMonitor.refreshHealthIfNeeded(force: true)
+        }
     }
 
     var panelLastTypedAction: DexterAction? {
@@ -190,6 +316,7 @@ final class CompanionManager: ObservableObject {
         dexterChatMessages = []
         dexterChatErrorMessage = nil
         dexterVoiceCoordinator.resetStreamingResponseText()
+        clearActivePointInvokeSession()
     }
 
     func openRecentDexterConversation(_ conversation: DexterRecentConversationSummary) {
@@ -202,12 +329,12 @@ final class CompanionManager: ObservableObject {
 
     func requestAccessibilityPermissionFromPanel() {
         _ = WindowPositionManager.requestAccessibilityPermission()
-        refreshAllPermissions()
+        refreshAllPermissions(caller: "requestAccessibilityPermissionFromPanel", emitVerbosePermissionDiagnostics: true)
     }
 
     func requestScreenRecordingPermissionFromPanel() {
         _ = WindowPositionManager.requestScreenRecordingPermission()
-        refreshAllPermissions()
+        refreshAllPermissions(caller: "requestScreenRecordingPermissionFromPanel", emitVerbosePermissionDiagnostics: true)
     }
 
     func beginPushToTalkFromVoiceControl() {
@@ -220,6 +347,7 @@ final class CompanionManager: ObservableObject {
 
     private func appendDexterUserChatMessage(_ text: String) {
         dexterChatErrorMessage = nil
+        dexterSpokenResponseErrorMessage = nil
         dexterChatMessages.append(DexterChatMessage(role: .user, text: text))
     }
 
@@ -343,13 +471,12 @@ final class CompanionManager: ObservableObject {
             let spokenText = outcome.spokenSummary
             if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                dexterVoiceCoordinator.voiceSettings.isSpokenResponsesEnabled {
+                dexterVoiceCoordinator.transitionToSpeaking()
                 do {
-                    try await elevenLabsTTSClient.speakText(spokenText)
-                    dexterVoiceCoordinator.transitionToSpeaking()
+                    try await dexterSpokenResponseService.speakAssistantResponse(spokenText)
                 } catch {
                     DexterAnalytics.trackTTSError(error: error.localizedDescription)
-                    print("⚠️ ElevenLabs TTS error after action approval: \(error)")
-                    speakSystemVoiceLine(DexterUserFacingErrorMessage.forTextToSpeechError(error))
+                    dexterSpokenResponseErrorMessage = DexterUserFacingErrorMessage.forTextToSpeechError(error)
                 }
             }
         }
@@ -426,17 +553,25 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
-        refreshAllPermissions()
+        refreshAllPermissions(caller: "CompanionManager.start", emitVerbosePermissionDiagnostics: true)
         print("🔑 Dexter start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindDemonstrationPhaseStore()
         bindDexterVoiceCoordinator()
         bindAudioPowerLevel()
+        bindMicrophoneRuntimeState()
+        bindSpeechToTextErrorPresentation()
         bindShortcutTransitions()
+        bindPointInvokeShortcut()
         // Eagerly warm up the model provider TLS handshake before onboarding interactions.
         dexterOrchestrator.warmUpModelConnectionIfNeeded()
         loadDexterRecentConversationsFromDisk()
         rebuildDexterChatMessagesFromSessionMemory()
+        refreshOllamaConnectionStatus()
+        refreshOpenClawGatewayConnection()
+        refreshDexterScreenContextUIState()
+        promptForMicrophoneIfNotDetermined()
+        runScreenCaptureCapabilityProbeIfNeeded()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -558,11 +693,15 @@ final class CompanionManager: ObservableObject {
         accessibilityCheckTimer = nil
     }
 
-    func refreshAllPermissions() {
+    func refreshAllPermissions(
+        caller: String = "unspecified",
+        emitVerbosePermissionDiagnostics: Bool = true
+    ) {
         let previouslyHadAccessibility = hasAccessibilityPermission
         let previouslyHadScreenRecording = hasScreenRecordingPermission
         let previouslyHadMicrophone = hasMicrophonePermission
         let previouslyHadAll = allPermissionsGranted
+        let previousScreenPermissionState = screenPermissionState
 
         let currentlyHasAccessibility = WindowPositionManager.hasAccessibilityPermission()
         hasAccessibilityPermission = currentlyHasAccessibility
@@ -577,6 +716,24 @@ final class CompanionManager: ObservableObject {
 
         let micAuthStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         hasMicrophonePermission = micAuthStatus == .authorized
+        syncMicrophonePermissionState(from: micAuthStatus)
+
+        screenPermissionState = CGPreflightScreenCaptureAccess() ? .granted : .denied
+
+        let permissionValuesChanged = previouslyHadAccessibility != hasAccessibilityPermission
+            || previouslyHadScreenRecording != hasScreenRecordingPermission
+            || previouslyHadMicrophone != hasMicrophonePermission
+            || previousScreenPermissionState != screenPermissionState
+
+        if permissionValuesChanged || caller != "startPermissionPollingTimer" {
+            DexterPermissionCheckLog.log(caller: caller, permissionValuesChanged: permissionValuesChanged)
+        }
+
+        if emitVerbosePermissionDiagnostics || permissionValuesChanged {
+            DexterMicPermissionLog.log(status: micAuthStatus)
+            DexterPermissionDiagnostics.logMicrophoneAuthorizationStatus()
+            DexterPermissionDiagnostics.logSelectedAudioInputDevice()
+        }
 
         // Debug: log permission state on changes
         if previouslyHadAccessibility != hasAccessibilityPermission
@@ -591,6 +748,8 @@ final class CompanionManager: ObservableObject {
         }
         if !previouslyHadScreenRecording && hasScreenRecordingPermission {
             DexterAnalytics.trackPermissionGranted(permission: "screen_recording")
+            hasVerifiedScreenCaptureProbe = false
+            runScreenCaptureCapabilityProbeIfNeeded()
         }
         if !previouslyHadMicrophone && hasMicrophonePermission {
             DexterAnalytics.trackPermissionGranted(permission: "microphone")
@@ -604,6 +763,8 @@ final class CompanionManager: ObservableObject {
         if !previouslyHadAll && allPermissionsGranted {
             DexterAnalytics.trackAllPermissionsGranted()
         }
+
+        refreshDexterScreenContextUIState(logScreenPermissionDiagnostics: emitVerbosePermissionDiagnostics || permissionValuesChanged)
     }
 
     /// Triggers the macOS screen content picker by performing a dummy
@@ -656,11 +817,39 @@ final class CompanionManager: ObservableObject {
     /// Triggers the system microphone prompt if the user has never been asked.
     /// Once granted/denied the status sticks and polling picks it up.
     private func promptForMicrophoneIfNotDetermined() {
-        guard AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined else { return }
-        AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+        let authorizationStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        syncMicrophonePermissionState(from: authorizationStatus)
+        DexterMicPermissionLog.log(status: authorizationStatus)
+        guard authorizationStatus == .notDetermined else { return }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        microphonePermissionState = .requesting
+        DexterMicPermissionLog.log(status: authorizationStatus, requestStarted: true)
+        DexterPermissionDiagnostics.logMicrophoneRequestAccessInvoked()
+        AVCaptureDevice.requestAccess(for: .audio) { granted in
+            let updatedStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+            DexterMicPermissionLog.log(status: updatedStatus, requestResult: granted)
+            DexterPermissionDiagnostics.logMicrophoneRequestAccessResult(granted: granted)
             Task { @MainActor [weak self] in
                 self?.hasMicrophonePermission = granted
+                self?.syncMicrophonePermissionState(from: updatedStatus)
             }
+        }
+    }
+
+    private func syncMicrophonePermissionState(from authorizationStatus: AVAuthorizationStatus) {
+        switch authorizationStatus {
+        case .authorized:
+            microphonePermissionState = .authorized
+        case .denied:
+            microphonePermissionState = .denied
+        case .notDetermined:
+            if microphonePermissionState != .requesting {
+                microphonePermissionState = .notDetermined
+            }
+        case .restricted:
+            microphonePermissionState = .unavailable
+        @unknown default:
+            microphonePermissionState = .unavailable
         }
     }
 
@@ -668,9 +857,12 @@ final class CompanionManager: ObservableObject {
     /// user grants them in System Settings. Screen Recording is the exception —
     /// macOS requires an app restart for that one to take effect.
     private func startPermissionPolling() {
-        accessibilityCheckTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        accessibilityCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.refreshAllPermissions()
+                self?.refreshAllPermissions(
+                    caller: "startPermissionPollingTimer",
+                    emitVerbosePermissionDiagnostics: false
+                )
             }
         }
     }
@@ -681,6 +873,64 @@ final class CompanionManager: ObservableObject {
             .sink { [weak self] powerLevel in
                 self?.currentAudioPowerLevel = powerLevel
             }
+
+        buddyDictationManager.$microphoneHardwareInputDetected
+            .receive(on: DispatchQueue.main)
+            .assign(to: &$microphoneHardwareInputDetected)
+    }
+
+    private var microphoneRuntimeStateCancellables = Set<AnyCancellable>()
+
+    private func bindMicrophoneRuntimeState() {
+        buddyDictationManager.$isPreparingToRecord
+            .combineLatest(
+                buddyDictationManager.$isRecordingFromKeyboardShortcut,
+                buddyDictationManager.$isRecordingFromMicrophoneButton,
+                buddyDictationManager.$isFinalizingTranscript
+            )
+            .combineLatest(buddyDictationManager.$lastMicrophoneErrorMessage)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] recordingTuple, lastMicrophoneErrorMessage in
+                guard let self else { return }
+                let isPreparing = recordingTuple.0
+                let isShortcutRecording = recordingTuple.1
+                let isMicrophoneButtonRecording = recordingTuple.2
+                let isFinalizing = recordingTuple.3
+
+                if isPreparing {
+                    self.microphoneRuntimeState = .starting
+                    return
+                }
+                if isShortcutRecording || isMicrophoneButtonRecording {
+                    self.microphoneRuntimeState = .listening
+                    self.microphoneInputErrorMessage = nil
+                    return
+                }
+                if isFinalizing {
+                    self.microphoneRuntimeState = .processing
+                    return
+                }
+                if let lastMicrophoneErrorMessage, !lastMicrophoneErrorMessage.isEmpty {
+                    self.microphoneRuntimeState = .error
+                    self.microphoneInputErrorMessage = lastMicrophoneErrorMessage
+                    return
+                }
+                self.microphoneRuntimeState = .idle
+                self.microphoneInputErrorMessage = nil
+            }
+            .store(in: &microphoneRuntimeStateCancellables)
+    }
+
+    private func bindSpeechToTextErrorPresentation() {
+        buddyDictationManager.$speechToTextErrorMessage
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] speechToTextErrorMessage in
+                guard let self else { return }
+                guard let speechToTextErrorMessage, !speechToTextErrorMessage.isEmpty else { return }
+                guard !self.buddyDictationManager.isActivelyRecordingAudio else { return }
+                self.dexterChatErrorMessage = speechToTextErrorMessage
+            }
+            .store(in: &microphoneRuntimeStateCancellables)
     }
 
     private func bindDemonstrationPhaseStore() {
@@ -715,7 +965,7 @@ final class CompanionManager: ObservableObject {
     private func cancelActiveDexterVoiceInteraction() {
         currentResponseTask?.cancel()
         pendingActionApprovalTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        dexterSpokenResponseService.stopSpeaking()
         dexterVoiceCoordinator.handleUserInterruption()
         Task {
             await dexterOrchestrator.cancelInFlightComputerActionIfNeeded()
@@ -729,6 +979,64 @@ final class CompanionManager: ObservableObject {
             .sink { [weak self] transition in
                 self?.handleShortcutTransition(transition)
             }
+    }
+
+    private func bindPointInvokeShortcut() {
+        pointInvokeShortcutCancellable = globalPushToTalkShortcutMonitor
+            .pointInvokePublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                self?.handlePointInvokeShortcut()
+            }
+    }
+
+    func handlePointInvokeShortcut() {
+        refreshAllPermissions(caller: "handlePointInvokeShortcut", emitVerbosePermissionDiagnostics: true)
+        cancelActiveDexterVoiceInteraction()
+
+        let pointerLocationInScreenSpace = NSEvent.mouseLocation
+        isPreparingPointInvokeSession = true
+        dexterScreenContextUIState = .analyzingScreen
+
+        NotificationCenter.default.post(name: .dexterDismissPanel, object: nil)
+        NotificationCenter.default.post(name: .dexterOpenMainWindow, object: nil)
+
+        Task {
+            let session = await dexterOrchestrator.preparePointInvokeSession(
+                pointerLocationInScreenSpace: pointerLocationInScreenSpace,
+                hasPersistedScreenContentGrant: hasScreenContentPermission
+            )
+
+            activePointInvokeSession = session
+            lastDexterContextSnapshot = session.contextSnapshot
+            isPreparingPointInvokeSession = false
+
+            if session.contextSnapshot.screenCaptureAvailability == .permissionMissing {
+                dexterScreenContextUIState = .permissionRequired
+            } else if session.screenCaptureSnapshots.isEmpty {
+                dexterScreenContextUIState = .unavailable
+            } else {
+                dexterScreenContextUIState = .ready
+            }
+        }
+    }
+
+    private func dexterModelGenerationOptions(forUserMessage userMessage: String) -> DexterModelGenerationOptions {
+        if let activePointInvokeSession {
+            return DexterModelGenerationOptions(
+                screenCaptureOverride: activePointInvokeSession.screenCaptureSnapshots.isEmpty
+                    ? nil
+                    : activePointInvokeSession.screenCaptureSnapshots,
+                includeSessionConversationHistory: true,
+                hasPersistedScreenContentGrant: hasScreenContentPermission,
+                pointerLocationInScreenSpaceOverride: activePointInvokeSession.pointerLocationInScreenSpace,
+                usePointAtContextRelevancePlan: true
+            )
+        }
+
+        return DexterModelGenerationOptions(
+            hasPersistedScreenContentGrant: hasScreenContentPermission
+        )
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
@@ -746,6 +1054,9 @@ final class CompanionManager: ObservableObject {
         guard dexterVoiceCoordinator.voiceSettings.isPushToTalkEnabled else { return }
         guard !buddyDictationManager.isDictationInProgress else { return }
         guard !showOnboardingVideo else { return }
+
+        DexterDiagnosticLog.voice("voice input started")
+        DexterDiagnosticLog.stt("STT session started")
 
         transientHideTask?.cancel()
         transientHideTask = nil
@@ -774,6 +1085,7 @@ final class CompanionManager: ObservableObject {
         }
 
         DexterAnalytics.trackPushToTalkStarted()
+        promptForMicrophoneIfNotDetermined()
 
         pendingKeyboardShortcutStartTask?.cancel()
         pendingKeyboardShortcutStartTask = Task {
@@ -783,12 +1095,12 @@ final class CompanionManager: ObservableObject {
                     // Partial transcripts are hidden (waveform-only UI)
                 },
                 submitDraftText: { [weak self] finalTranscript in
+                    DexterMicDiagnosticLog.log("transcript received (\(finalTranscript.count) characters)")
+                    DexterDiagnosticLog.stt("transcript received (\(finalTranscript.count) characters)")
                     self?.lastTranscript = finalTranscript
                     self?.appendDexterUserChatMessage(finalTranscript)
-                    #if DEBUG
-                    print("🗣️ Dexter received transcript (\(finalTranscript.count) characters, redacted)")
-                    #endif
                     DexterAnalytics.trackUserMessageSent(transcript: finalTranscript)
+                    DexterDiagnosticLog.voice("transcript sent to orchestrator")
                     self?.sendUserMessageToDexter(finalTranscript, source: .pushToTalkTranscript)
                 }
             )
@@ -797,9 +1109,8 @@ final class CompanionManager: ObservableObject {
 
     private func endPushToTalkSession() {
         DexterAnalytics.trackPushToTalkReleased()
-        pendingKeyboardShortcutStartTask?.cancel()
+        buddyDictationManager.handleKeyboardShortcutReleased()
         pendingKeyboardShortcutStartTask = nil
-        buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
     }
 
     // MARK: - Dexter Voice response pipeline
@@ -809,24 +1120,100 @@ final class CompanionManager: ObservableObject {
         cancelActiveDexterVoiceInteraction()
 
         currentResponseTask = Task {
+            _ = DexterTurnTrace.beginTurn()
+            var turnOutcome: DexterTurnOutcome?
+            let screenRecordingPreflightGranted = CGPreflightScreenCaptureAccess()
+            let userRequestedScreenContext = activePointInvokeSession != nil
+                || DexterContextRelevancePlanner.shouldRequestScreenCapture(forUserMessage: transcript)
+
+            defer {
+                if turnOutcome == nil {
+                    if Task.isCancelled {
+                        turnOutcome = .cancelled
+                    } else {
+                        turnOutcome = .error
+                    }
+                }
+                if userRequestedScreenContext {
+                    switch turnOutcome {
+                    case .success:
+                        DexterVisionTiming.markTurnCompleted()
+                    case .timeout:
+                        DexterVisionTiming.logTimeout(afterSeconds: 90)
+                    case .error, .cancelled, .none:
+                        DexterVisionTiming.markTurnCompleted()
+                    }
+                }
+                DexterTurnTrace.finish(outcome: turnOutcome ?? .error)
+                refreshDexterScreenContextUIState(logScreenPermissionDiagnostics: false)
+                if dexterVoiceCoordinator.interactionState == .thinking {
+                    dexterVoiceCoordinator.transitionToIdle()
+                }
+                if source == .pushToTalkTranscript, !Task.isCancelled {
+                    scheduleTransientHideIfNeeded()
+                }
+            }
+
             dexterVoiceCoordinator.resetStreamingResponseText()
+            dexterSpokenResponseErrorMessage = nil
             dexterVoiceCoordinator.transitionToThinking()
+            DexterDiagnosticLog.model("generation started")
+
+            DexterTurnTrace.log("USER REQUEST: \(transcript)")
+            DexterTurnTrace.log("visualContextRequired=\(userRequestedScreenContext)")
+            DexterTurnTrace.log("orchestrator started")
+            if userRequestedScreenContext {
+                dexterScreenContextUIState = .analyzingScreen
+            }
+
+            if userRequestedScreenContext && !screenRecordingPreflightGranted {
+                DexterDiagnosticLog.vision("screen context unavailable — CGPreflight false")
+            }
+
+            let hasFrozenPointInvokeCaptures = activePointInvokeSession?.screenCaptureSnapshots.isEmpty == false
+            if userRequestedScreenContext && !screenRecordingPreflightGranted && !hasFrozenPointInvokeCaptures {
+                let unavailableMessage = DexterUserFacingErrorMessage.forScreenContextUnavailable()
+                dexterChatErrorMessage = unavailableMessage
+                appendDexterAssistantChatMessage(unavailableMessage, isError: true)
+                dexterVoiceCoordinator.recordAssistantResponse(unavailableMessage)
+                dexterVoiceCoordinator.resetStreamingResponseText()
+                dexterVoiceCoordinator.transitionToIdle()
+                turnOutcome = .success
+                return
+            }
+
+            let resolvedSystemPrompt = DexterAISystemPrompt.companionSystemPrompt
+                + (source == .pushToTalkTranscript ? DexterAISystemPrompt.voiceResponseSupplement : "")
 
             do {
                 let orchestratorResponse = try await dexterOrchestrator.generateModelResponse(
                     userTranscript: transcript,
-                    systemPrompt: DexterVoiceSystemPrompt.conciseVoiceResponseSystemPrompt,
-                    options: DexterModelGenerationOptions(
-                        hasPersistedScreenContentGrant: hasScreenContentPermission
-                    ),
+                    systemPrompt: resolvedSystemPrompt,
+                    options: dexterModelGenerationOptions(forUserMessage: transcript),
                     onTextChunk: { [weak self] chunk in
                         self?.dexterVoiceCoordinator.appendStreamingResponseChunk(chunk)
                     }
                 )
 
-                guard !Task.isCancelled else { return }
+                DexterTurnTrace.log("orchestrator finished")
+                DexterDiagnosticLog.model("model response received")
+
+                guard !Task.isCancelled else {
+                    turnOutcome = .cancelled
+                    dexterVoiceCoordinator.transitionToIdle()
+                    return
+                }
 
                 updateDevelopmentContextInspectorIfNeeded(from: orchestratorResponse.context)
+                lastDexterContextSnapshot = DexterContextSnapshotBuilder.make(
+                    from: orchestratorResponse.context,
+                    permissionState: DexterContextPermissionState(
+                        hasScreenRecordingPermission: hasScreenRecordingPermission,
+                        hasAccessibilityPermission: hasAccessibilityPermission,
+                        hasScreenContentPermission: hasScreenContentPermission
+                    ),
+                    userRequestedScreenContext: userRequestedScreenContext
+                )
                 refreshActionConfirmationPresentation()
 
                 let fullResponseText = orchestratorResponse.fullResponseText
@@ -842,15 +1229,11 @@ final class CompanionManager: ObservableObject {
                 dexterVoiceCoordinator.recordAssistantResponse(spokenText)
                 appendDexterAssistantChatMessage(spokenText)
                 dexterVoiceCoordinator.resetStreamingResponseText()
+                dexterVoiceCoordinator.transitionToIdle()
 
                 // Handle element pointing if Claude returned coordinates.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
+                // Thinking already ended; overlay can show the triangle for pointing.
                 let hasPointCoordinate = parseResult.coordinate != nil
-                if hasPointCoordinate {
-                    dexterVoiceCoordinator.transitionToIdle()
-                }
 
                 // Pick the screen capture matching Claude's screen number,
                 // falling back to the cursor screen if not specified.
@@ -914,37 +1297,59 @@ final class CompanionManager: ObservableObject {
                 print("🧠 Conversation history: \(exchangeCount) exchanges")
 
                 DexterAnalytics.trackAIResponseReceived(response: spokenText)
+                turnOutcome = .success
 
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                    dexterVoiceCoordinator.voiceSettings.isSpokenResponsesEnabled {
+                    dexterVoiceCoordinator.transitionToSpeaking()
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
-                        dexterVoiceCoordinator.transitionToSpeaking()
+                        try await dexterSpokenResponseService.speakAssistantResponse(spokenText)
+                    } catch is CancellationError {
+                        DexterDiagnosticLog.tts("playback cancelled")
                     } catch {
                         DexterAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
-                        speakSystemVoiceLine(DexterUserFacingErrorMessage.forTextToSpeechError(error))
+                        DexterDiagnosticLog.tts("playback failed")
+                        let spokenErrorMessage = DexterUserFacingErrorMessage.forTextToSpeechError(error)
+                        dexterSpokenResponseErrorMessage = spokenErrorMessage
+                    }
+                    if dexterVoiceCoordinator.interactionState == .speaking {
+                        dexterVoiceCoordinator.transitionToIdle()
                     }
                 }
             } catch is CancellationError {
                 dexterDemonstrationPhaseStore.reset()
+                turnOutcome = .cancelled
+                dexterVoiceCoordinator.transitionToIdle()
             } catch {
                 DexterAnalytics.trackResponseError(error: error.localizedDescription)
-                print("⚠️ Companion response error: \(error)")
-                let userMessage = DexterUserFacingErrorMessage.forCompanionModelError(error)
+                DexterDiagnosticLog.model("generation failed: \(error.localizedDescription)")
+                if error is DexterModelRequestTimeoutError
+                    || error is DexterContextAssemblyTimeoutError {
+                    DexterTurnTrace.log("MODEL TIMEOUT")
+                } else {
+                    DexterTurnTrace.log("MODEL ERROR \(error.localizedDescription)")
+                }
+                let userMessage: String
+                if userRequestedScreenContext && !screenRecordingPreflightGranted {
+                    userMessage = DexterUserFacingErrorMessage.forScreenContextUnavailable()
+                } else if let ollamaError = error as? OllamaProviderError, ollamaError == .imageEncodingFailed {
+                    userMessage = DexterUserFacingErrorMessage.forScreenAnalysisFailure()
+                } else {
+                    userMessage = DexterUserFacingErrorMessage.forCompanionModelError(error)
+                }
                 if !userMessage.isEmpty {
                     dexterChatErrorMessage = userMessage
                     dexterVoiceCoordinator.recordAssistantResponse(userMessage)
                     appendDexterAssistantChatMessage(userMessage, isError: true)
                     dexterVoiceCoordinator.resetStreamingResponseText()
-                    speakSystemVoiceLine(userMessage)
+                    dexterVoiceCoordinator.transitionToIdle()
                 }
-            }
-
-            if !Task.isCancelled {
-                dexterVoiceCoordinator.transitionToIdle()
-                if source == .pushToTalkTranscript {
-                    scheduleTransientHideIfNeeded()
+                if error is DexterModelRequestTimeoutError
+                    || error is DexterContextAssemblyTimeoutError
+                    || error is DexterSpeechToTextTimeoutError {
+                    turnOutcome = .timeout
+                } else {
+                    turnOutcome = .error
                 }
             }
         }
@@ -968,7 +1373,7 @@ final class CompanionManager: ObservableObject {
         transientHideTask?.cancel()
         transientHideTask = Task {
             // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            while dexterSpokenResponseService.isSpeaking {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -986,15 +1391,6 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
         }
-    }
-
-    /// Short system TTS for errors when ElevenLabs is unavailable (does not replace chat text).
-    private func speakSystemVoiceLine(_ message: String) {
-        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedMessage.isEmpty else { return }
-        let synthesizer = NSSpeechSynthesizer()
-        synthesizer.startSpeaking(trimmedMessage)
-        dexterVoiceCoordinator.transitionToSpeaking()
     }
 
     // MARK: - Point Tag Parsing

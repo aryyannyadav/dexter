@@ -18,14 +18,39 @@ struct DexterContextRelevancePlan: Equatable {
 }
 
 enum DexterContextRelevancePlanner {
-    static func shouldSkipScreenCapture(forUserMessage userMessage: String) -> Bool {
+    static func shouldRequestScreenCapture(forUserMessage userMessage: String) -> Bool {
         let normalizedMessage = userMessage.lowercased()
-        let isConversationRecall = matchesConversationRecall(normalizedMessage)
-        let needsVisualContext = matchesVisualDeictic(normalizedMessage)
+        return matchesVisualDeictic(normalizedMessage)
             || matchesWhatIsThis(normalizedMessage)
+            || matchesExplainWindow(normalizedMessage)
             || matchesHypotheticalControlQuestion(normalizedMessage)
             || matchesErrorDebugging(normalizedMessage)
-        return isConversationRecall && !needsVisualContext
+    }
+
+    static func shouldSkipScreenCapture(forUserMessage userMessage: String) -> Bool {
+        !shouldRequestScreenCapture(forUserMessage: userMessage)
+    }
+
+    /// Pointer-invocation turns always include captured screen + environment context.
+    static func planForPointAtInvocation(context: DexterContext) -> DexterContextRelevancePlan {
+        let hasScreenCaptures = context.screen.captureAvailability == .available
+            && (context.screen.primaryScreenshot != nil || !context.screen.allScreens.isEmpty)
+        let hasSelectedText = {
+            guard let selectedText = context.selectedText.selectedText else { return false }
+            return !selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }()
+
+        return DexterContextRelevancePlan(
+            includeActiveApplication: true,
+            includeActiveWindow: true,
+            includePointerContext: hasScreenCaptures,
+            includeScreenContext: hasScreenCaptures,
+            includeSelectedText: hasSelectedText,
+            includeRecentConversationInPrompt: false,
+            includeRecentConversationInAPIHistory: true,
+            includeCurrentTask: false,
+            includePersistentMemory: context.persistentMemory.hasAnyPersistentMemory
+        )
     }
 
     static func plan(forUserMessage userMessage: String, context: DexterContext) -> DexterContextRelevancePlan {
@@ -94,16 +119,30 @@ enum DexterContextRelevancePlanner {
         }
 
         return DexterContextRelevancePlan(
-            includeActiveApplication: hasScreenCaptures,
-            includeActiveWindow: hasScreenCaptures,
-            includePointerContext: hasScreenCaptures,
-            includeScreenContext: hasScreenCaptures,
-            includeSelectedText: hasSelectedText && isErrorDebugging,
+            includeActiveApplication: false,
+            includeActiveWindow: false,
+            includePointerContext: false,
+            includeScreenContext: false,
+            includeSelectedText: false,
             includeRecentConversationInPrompt: false,
             includeRecentConversationInAPIHistory: true,
             includeCurrentTask: hasCurrentTask,
             includePersistentMemory: hasPersistentMemory
         )
+    }
+
+    private static func matchesExplainWindow(_ normalizedMessage: String) -> Bool {
+        let phrases = [
+            "explain this window",
+            "explain the window",
+            "what's on my screen",
+            "what is on my screen",
+            "explain what's on my screen",
+            "explain what is on my screen",
+            "look at my screen",
+            "see my screen"
+        ]
+        return phrases.contains { normalizedMessage.contains($0) }
     }
 
     private static func matchesConversationRecall(_ normalizedMessage: String) -> Bool {

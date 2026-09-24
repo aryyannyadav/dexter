@@ -114,7 +114,7 @@ struct DexterSidebar: View {
     }
 
     private var contextBlock: some View {
-        DexterContextIndicator(isScreenContextAvailable: companionManager.isDexterScreenContextAvailable)
+        DexterContextIndicator(uiState: companionManager.dexterScreenContextUIState, compact: true)
     }
 
     private var modelStatus: some View {

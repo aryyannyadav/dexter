@@ -12,6 +12,7 @@ struct DexterActionExecutionOutcome: Equatable {
     /// When set, the orchestrator should surface confirmation UI before continuing.
     let pendingConfirmation: DexterPendingActionExecution?
     let verificationReport: DexterActionVerificationReport?
+    let turnRecord: DexterActionTurnRecord?
 }
 
 enum DexterActionExecutionPipeline {
@@ -38,7 +39,7 @@ enum DexterActionExecutionPipeline {
             action = action.withState(.completed)
             actionStore.update(action)
             let summary = "Dexter inspected the current context without making changes: \(action.humanReadableDescription)"
-            return DexterActionExecutionOutcome(action: action, spokenSummary: summary, pendingConfirmation: nil, verificationReport: nil)
+            return DexterActionExecutionOutcome(action: action, spokenSummary: summary, pendingConfirmation: nil, verificationReport: nil, turnRecord: nil)
         }
 
         if DexterActionConfirmationPolicy.requiresUserConfirmation(
@@ -60,7 +61,17 @@ enum DexterActionExecutionPipeline {
                 to: .waitingForApproval,
                 detail: action.humanReadableDescription
             )
-            return DexterActionExecutionOutcome(action: action, spokenSummary: message, pendingConfirmation: pending, verificationReport: nil)
+            let agentRequestForOpenClawRouting = DexterActionAgentRequestMapper.agentActionRequest(for: action)
+            if OpenClawRuntimeAllowlist.isDexterSupportedAction(agentRequestForOpenClawRouting) {
+                DexterOpenClawLog.log("approval required")
+            }
+            return DexterActionExecutionOutcome(
+                action: action,
+                spokenSummary: message,
+                pendingConfirmation: pending,
+                verificationReport: nil,
+                turnRecord: nil
+            )
         }
 
         let permissionDecision = permissionManager.evaluateComputerActionPermission(
@@ -72,7 +83,14 @@ enum DexterActionExecutionPipeline {
             actionStore.update(action)
             actionHistoryStore.recordAction(actionIdentifier: action.type.rawValue, summary: permissionDecision.message)
             demonstrationPhaseStore?.transition(to: .done, detail: permissionDecision.message)
-            return DexterActionExecutionOutcome(action: action, spokenSummary: permissionDecision.message, pendingConfirmation: nil, verificationReport: nil)
+            DexterActionDiagnosticLog.permission("refused reason=\(permissionDecision.message)")
+            return DexterActionExecutionOutcome(
+                action: action,
+                spokenSummary: permissionDecision.message,
+                pendingConfirmation: nil,
+                verificationReport: nil,
+                turnRecord: nil
+            )
         }
 
         action = action.withState(.approved)
@@ -83,8 +101,15 @@ enum DexterActionExecutionPipeline {
 
         demonstrationPhaseStore?.transition(to: .acting, detail: action.humanReadableDescription)
 
-        let observationBefore = DexterActionObservationSnapshot.from(context: context)
+        DexterActionDiagnosticLog.permission("approved")
         let agentRequest = DexterActionAgentRequestMapper.agentActionRequest(for: action)
+        if let targetApplicationName = agentRequest.parameters["applicationName"] {
+            DexterActionDiagnosticLog.intent("type=\(agentRequest.actionIdentifier) target=\(targetApplicationName)")
+            DexterActionDiagnosticLog.plan("runtime=OpenClaw command=computer.act")
+            DexterActionDiagnosticLog.action("id=\(action.id.uuidString.prefix(8)) intent=\(agentRequest.actionIdentifier) target=\(targetApplicationName)")
+        }
+
+        let observationBefore = DexterActionObservationSnapshot.from(context: context)
 
         do {
             let verificationBundle = try await executeObserveVerifyReport(
@@ -110,11 +135,20 @@ enum DexterActionExecutionPipeline {
                 to: .done,
                 detail: verificationBundle.verificationOutcome.summary
             )
+            let turnRecord = DexterActionTurnRecordBuilder.build(
+                action: action,
+                runtimeName: agentRuntime.runtimeName,
+                runtimeExecutionIdentifier: nil,
+                verificationReport: verificationBundle.verificationOutcome.report,
+                spokenSummary: verificationBundle.verificationOutcome.summary
+            )
+            DexterActionDiagnosticLog.action("completed status=\(turnRecord.resultStatus.rawValue)")
             return DexterActionExecutionOutcome(
                 action: action,
                 spokenSummary: verificationBundle.verificationOutcome.summary,
                 pendingConfirmation: nil,
-                verificationReport: verificationBundle.verificationOutcome.report
+                verificationReport: verificationBundle.verificationOutcome.report,
+                turnRecord: turnRecord
             )
         } catch is CancellationError {
             action = action.withState(.cancelled)
@@ -123,7 +157,13 @@ enum DexterActionExecutionPipeline {
             let message = DexterUserFacingErrorMessage.forActionRuntimeError(CancellationError(), runtimeName: agentRuntime.runtimeName)
             actionHistoryStore.recordAction(actionIdentifier: action.type.rawValue, summary: message)
             demonstrationPhaseStore?.transition(to: .done, detail: message)
-            return DexterActionExecutionOutcome(action: action, spokenSummary: message, pendingConfirmation: nil, verificationReport: nil)
+            return DexterActionExecutionOutcome(
+                action: action,
+                spokenSummary: message,
+                pendingConfirmation: nil,
+                verificationReport: nil,
+                turnRecord: nil
+            )
         } catch {
             action = action.withState(.failed)
             actionStore.update(action)
@@ -131,7 +171,13 @@ enum DexterActionExecutionPipeline {
             let message = DexterUserFacingErrorMessage.forActionRuntimeError(error, runtimeName: agentRuntime.runtimeName)
             actionHistoryStore.recordAction(actionIdentifier: action.type.rawValue, summary: message)
             demonstrationPhaseStore?.transition(to: .done, detail: message)
-            return DexterActionExecutionOutcome(action: action, spokenSummary: message, pendingConfirmation: nil, verificationReport: nil)
+            return DexterActionExecutionOutcome(
+                action: action,
+                spokenSummary: message,
+                pendingConfirmation: nil,
+                verificationReport: nil,
+                turnRecord: nil
+            )
         }
     }
 
@@ -175,12 +221,25 @@ enum DexterActionExecutionPipeline {
                 hasAccessibilityPermission: permissionSnapshot.hasAccessibilityPermission
             )
 
+            DexterActionDiagnosticLog.verify("verification started")
+
             let verificationOutcome = await actionVerifier.verify(
                 action: currentAction,
                 executionResult: executionResult,
                 observationBefore: observationBefore,
                 observationAfter: observationAfter
             )
+
+            switch verificationOutcome.status {
+            case .verified:
+                DexterActionDiagnosticLog.verify("verification result=verified")
+            case .partiallyVerified:
+                DexterActionDiagnosticLog.verify("verification result=partiallyVerified")
+            case .notVerified:
+                DexterActionDiagnosticLog.verify("verification result=notVerified")
+            case .failed:
+                DexterActionDiagnosticLog.verify("verification result=failed")
+            }
 
             if verificationOutcome.status == .failed,
                !didAttemptSafeRetry,
@@ -190,11 +249,9 @@ enum DexterActionExecutionPipeline {
             }
 
             switch verificationOutcome.status {
-            case .success:
+            case .verified, .partiallyVerified:
                 currentAction = currentAction.withState(.completed)
-            case .failed:
-                currentAction = currentAction.withState(.verificationFailed)
-            case .uncertain:
+            case .notVerified, .failed:
                 currentAction = currentAction.withState(.verificationFailed)
             }
 

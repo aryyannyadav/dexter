@@ -15,6 +15,24 @@ struct DexterModelGenerationRequest: Equatable {
     let userPrompt: String
     let images: [DexterModelImageInput]
     let conversationHistory: [DexterConversationExchange]
+    let userRequestedScreenContext: Bool
+    let screenCaptureAvailability: DexterContextAvailability
+
+    init(
+        systemPrompt: String,
+        userPrompt: String,
+        images: [DexterModelImageInput],
+        conversationHistory: [DexterConversationExchange],
+        userRequestedScreenContext: Bool = false,
+        screenCaptureAvailability: DexterContextAvailability = .notApplicable
+    ) {
+        self.systemPrompt = systemPrompt
+        self.userPrompt = userPrompt
+        self.images = images
+        self.conversationHistory = conversationHistory
+        self.userRequestedScreenContext = userRequestedScreenContext
+        self.screenCaptureAvailability = screenCaptureAvailability
+    }
 }
 
 struct DexterModelGenerationResult: Equatable {

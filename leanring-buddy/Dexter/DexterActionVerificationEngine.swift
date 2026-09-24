@@ -7,9 +7,10 @@ import AppKit
 import Foundation
 
 enum DexterActionVerificationStatus: String, Equatable {
-    case success = "SUCCESS"
+    case verified = "VERIFIED"
+    case partiallyVerified = "PARTIALLY_VERIFIED"
+    case notVerified = "NOT_VERIFIED"
     case failed = "FAILED"
-    case uncertain = "UNCERTAIN"
 }
 
 struct DexterActionVerificationReport: Equatable {
@@ -20,6 +21,7 @@ struct DexterActionVerificationReport: Equatable {
 }
 
 enum DexterActionVerificationEngine {
+    @MainActor
     static func verify(
         action: DexterAction,
         observationBefore: DexterActionObservationSnapshot,
@@ -31,6 +33,22 @@ enum DexterActionVerificationEngine {
             return verifyOpenApplication(
                 action: action,
                 observationAfter: observationAfter,
+                executionResult: executionResult,
+                expectedRunning: true
+            )
+
+        case .focusApplication:
+            return verifyOpenApplication(
+                action: action,
+                observationAfter: observationAfter,
+                executionResult: executionResult,
+                expectedRunning: true,
+                requireFrontmost: true
+            )
+
+        case .quitApplication:
+            return verifyQuitApplication(
+                action: action,
                 executionResult: executionResult
             )
 
@@ -54,45 +72,148 @@ enum DexterActionVerificationEngine {
         }
     }
 
+    @MainActor
     private static func verifyOpenApplication(
         action: DexterAction,
         observationAfter: DexterActionObservationSnapshot,
-        executionResult: AgentActionResult
+        executionResult: AgentActionResult,
+        expectedRunning: Bool,
+        requireFrontmost: Bool = false
     ) -> DexterActionVerificationReport {
         let intendedApplicationName = action.parameters["applicationName"] ?? "the application"
-        let intendedStateDescription = "\(intendedApplicationName) should be the frontmost application."
+        let verb = requireFrontmost ? "focused" : "open"
+        let intendedStateDescription = requireFrontmost
+            ? "\(intendedApplicationName) should be running and frontmost."
+            : "\(intendedApplicationName) should be running with a visible window when applicable."
 
-        guard observationAfter.hasAccessibilityObservation else {
+        let launchSignals = DexterOpenApplicationVerification.signals(forApplicationName: intendedApplicationName)
+        DexterActionDiagnosticLog.verify("running=\(launchSignals.isApplicationRunning)")
+        DexterActionDiagnosticLog.verify("visible=\(launchSignals.hasVisibleWindow)")
+        DexterActionDiagnosticLog.verify("frontmost=\(launchSignals.isApplicationFrontmost)")
+
+        let observedApplicationName = launchSignals.observedRunningApplicationName
+            ?? observationAfter.activeApplicationLocalizedName
+            ?? "unknown application"
+        let observedBundleIdentifier = launchSignals.observedRunningBundleIdentifier
+            ?? observationAfter.activeApplicationBundleIdentifier
+            ?? "unknown bundle"
+        let observedStateDescription =
+            "running=\(launchSignals.isApplicationRunning), visible=\(launchSignals.hasVisibleWindow), frontmost=\(launchSignals.isApplicationFrontmost), app=\(observedApplicationName) (\(observedBundleIdentifier))."
+
+        if expectedRunning && launchSignals.isApplicationRunning {
+            if requireFrontmost {
+                if launchSignals.isApplicationFrontmost {
+                    DexterActionDiagnosticLog.verify("result=verified")
+                    return DexterActionVerificationReport(
+                        status: .verified,
+                        summary: "Done — \(intendedApplicationName) is in front.",
+                        intendedStateDescription: intendedStateDescription,
+                        observedStateDescription: observedStateDescription
+                    )
+                }
+
+                DexterActionDiagnosticLog.verify("result=partiallyVerified")
+                return DexterActionVerificationReport(
+                    status: .partiallyVerified,
+                    summary: "\(intendedApplicationName) is running, but it isn't the frontmost window.",
+                    intendedStateDescription: intendedStateDescription,
+                    observedStateDescription: observedStateDescription
+                )
+            }
+
+            if launchSignals.isApplicationFrontmost {
+                DexterActionDiagnosticLog.verify("result=verified")
+                return DexterActionVerificationReport(
+                    status: .verified,
+                    summary: "\(intendedApplicationName) is open.",
+                    intendedStateDescription: intendedStateDescription,
+                    observedStateDescription: observedStateDescription
+                )
+            }
+
+            if launchSignals.hasVisibleWindow {
+                DexterActionDiagnosticLog.verify("result=partiallyVerified")
+                return DexterActionVerificationReport(
+                    status: .partiallyVerified,
+                    summary: "\(intendedApplicationName) is open, although it isn't the frontmost window.",
+                    intendedStateDescription: intendedStateDescription,
+                    observedStateDescription: observedStateDescription
+                )
+            }
+
+            DexterActionDiagnosticLog.verify("result=partiallyVerified")
             return DexterActionVerificationReport(
-                status: .uncertain,
-                summary: "Dexter could not confirm whether \(intendedApplicationName) opened because Accessibility observation was unavailable.",
-                intendedStateDescription: intendedStateDescription,
-                observedStateDescription: "Frontmost application could not be read."
-            )
-        }
-
-        let observedApplicationName = observationAfter.activeApplicationLocalizedName ?? "unknown application"
-        let observedBundleIdentifier = observationAfter.activeApplicationBundleIdentifier ?? "unknown bundle"
-        let observedStateDescription = "Frontmost application is \(observedApplicationName) (\(observedBundleIdentifier))."
-
-        if applicationNamesMatch(intendedName: intendedApplicationName, observedName: observedApplicationName)
-            || applicationNamesMatch(intendedName: intendedApplicationName, bundleIdentifier: observedBundleIdentifier) {
-            return DexterActionVerificationReport(
-                status: .success,
-                summary: "Verified: \(intendedApplicationName) is the frontmost application.",
+                status: .partiallyVerified,
+                summary: "\(intendedApplicationName) is running, but Dexter could not confirm a visible window.",
                 intendedStateDescription: intendedStateDescription,
                 observedStateDescription: observedStateDescription
             )
         }
 
-        let runtimeClaimedSuccess = executionResult.reportedSuccess
-        let failureSummary = runtimeClaimedSuccess
-            ? "Verification failed: the runtime reported success, but \(observedApplicationName) is frontmost instead of \(intendedApplicationName)."
-            : "Verification failed: \(intendedApplicationName) is not the frontmost application."
+        if !executionResult.reportedSuccess {
+            DexterActionDiagnosticLog.verify("result=failed")
+            let failureSummary = executionResult.message.nonEmptyTrimmedValue
+                ?? "I couldn't \(verb) \(intendedApplicationName)."
+            return DexterActionVerificationReport(
+                status: .failed,
+                summary: failureSummary,
+                intendedStateDescription: intendedStateDescription,
+                observedStateDescription: observedStateDescription
+            )
+        }
 
+        DexterActionDiagnosticLog.verify("result=failed")
+        let failureSummary =
+            "I sent the \(verb) action, but \(intendedApplicationName) does not appear to be running."
         return DexterActionVerificationReport(
             status: .failed,
             summary: failureSummary,
+            intendedStateDescription: intendedStateDescription,
+            observedStateDescription: observedStateDescription
+        )
+    }
+
+    @MainActor
+    private static func verifyQuitApplication(
+        action: DexterAction,
+        executionResult: AgentActionResult
+    ) -> DexterActionVerificationReport {
+        let intendedApplicationName = action.parameters["applicationName"] ?? "the application"
+        let intendedStateDescription = "\(intendedApplicationName) should not be running."
+
+        let launchSignals = DexterOpenApplicationVerification.signals(forApplicationName: intendedApplicationName)
+        DexterActionDiagnosticLog.verify("running=\(launchSignals.isApplicationRunning)")
+        DexterActionDiagnosticLog.verify("visible=\(launchSignals.hasVisibleWindow)")
+        DexterActionDiagnosticLog.verify("frontmost=\(launchSignals.isApplicationFrontmost)")
+
+        let observedStateDescription =
+            "running=\(launchSignals.isApplicationRunning), visible=\(launchSignals.hasVisibleWindow), frontmost=\(launchSignals.isApplicationFrontmost)."
+
+        if !launchSignals.isApplicationRunning {
+            DexterActionDiagnosticLog.verify("result=verified")
+            return DexterActionVerificationReport(
+                status: .verified,
+                summary: "Done — \(intendedApplicationName) is closed.",
+                intendedStateDescription: intendedStateDescription,
+                observedStateDescription: observedStateDescription
+            )
+        }
+
+        if !executionResult.reportedSuccess {
+            DexterActionDiagnosticLog.verify("result=failed")
+            return DexterActionVerificationReport(
+                status: .failed,
+                summary: executionResult.message.nonEmptyTrimmedValue
+                    ?? "I couldn't quit \(intendedApplicationName).",
+                intendedStateDescription: intendedStateDescription,
+                observedStateDescription: observedStateDescription
+            )
+        }
+
+        DexterActionDiagnosticLog.verify("result=failed")
+        return DexterActionVerificationReport(
+            status: .failed,
+            summary: "I sent the quit action, but I couldn't verify that \(intendedApplicationName) actually closed.",
             intendedStateDescription: intendedStateDescription,
             observedStateDescription: observedStateDescription
         )
@@ -108,7 +229,7 @@ enum DexterActionVerificationEngine {
 
         guard observationAfter.hasAccessibilityObservation else {
             return DexterActionVerificationReport(
-                status: .uncertain,
+                status: .notVerified,
                 summary: "Dexter could not verify the click because Accessibility observation was unavailable.",
                 intendedStateDescription: intendedStateDescription,
                 observedStateDescription: "Window state before and after could not be compared."
@@ -125,7 +246,7 @@ enum DexterActionVerificationEngine {
                 "Accessibility value at pointer changed from \"\(valueBefore)\" to \"\(valueAfter)\"."
             if valueBefore != valueAfter && !valueAfter.isEmpty {
                 return DexterActionVerificationReport(
-                    status: .success,
+                    status: .verified,
                     summary: "Verified: the control's state at your pointer changed after the click.",
                     intendedStateDescription: intendedStateDescription,
                     observedStateDescription: observedStateDescription
@@ -137,7 +258,7 @@ enum DexterActionVerificationEngine {
             let observedStateDescription =
                 "Accessibility title at pointer changed from \"\(titleBefore)\" to \"\(titleAfter)\"."
             return DexterActionVerificationReport(
-                status: .uncertain,
+                status: .notVerified,
                 summary: "Dexter saw the control label at your pointer change after the click, but could not confirm the intended state.",
                 intendedStateDescription: intendedStateDescription,
                 observedStateDescription: observedStateDescription
@@ -152,7 +273,7 @@ enum DexterActionVerificationEngine {
            !expectedWindowTitleAfter.isEmpty {
             if windowTitleAfter == expectedWindowTitleAfter {
                 return DexterActionVerificationReport(
-                    status: .success,
+                    status: .verified,
                     summary: "Verified: the window title matches the expected state after the click.",
                     intendedStateDescription: "Window title should be \"\(expectedWindowTitleAfter)\".",
                     observedStateDescription: observedStateDescription
@@ -171,7 +292,7 @@ enum DexterActionVerificationEngine {
 
         if windowTitleBefore != windowTitleAfter && !windowTitleAfter.isEmpty {
             return DexterActionVerificationReport(
-                status: .uncertain,
+                status: .notVerified,
                 summary: "Dexter saw the active window change after the click, but could not confirm the intended control state.",
                 intendedStateDescription: intendedStateDescription,
                 observedStateDescription: observedStateDescription
@@ -179,7 +300,7 @@ enum DexterActionVerificationEngine {
         }
 
         return DexterActionVerificationReport(
-            status: executionResult.reportedSuccess ? .uncertain : .failed,
+            status: executionResult.reportedSuccess ? .notVerified : .failed,
             summary: executionResult.reportedSuccess
                 ? "Dexter could not confirm a UI change after the click; the window title stayed the same."
                 : "Verification failed: the click did not change the observed window state.",
@@ -213,7 +334,7 @@ enum DexterActionVerificationEngine {
 
         if didAttemptPaste && isVisualStudioCodeFrontmost {
             return DexterActionVerificationReport(
-                status: .uncertain,
+                status: .notVerified,
                 summary: "Dexter pasted the proposed fix into Visual Studio Code, but could not independently confirm the editor content changed.",
                 intendedStateDescription: intendedStateDescription,
                 observedStateDescription: observedStateDescription
@@ -222,7 +343,7 @@ enum DexterActionVerificationEngine {
 
         if pasteboardMatchesFix && isVisualStudioCodeFrontmost {
             return DexterActionVerificationReport(
-                status: .uncertain,
+                status: .notVerified,
                 summary: "The fix is on the clipboard and VS Code is frontmost. Press Command+V if the line did not update.",
                 intendedStateDescription: intendedStateDescription,
                 observedStateDescription: observedStateDescription
@@ -231,7 +352,7 @@ enum DexterActionVerificationEngine {
 
         if pasteboardMatchesFix {
             return DexterActionVerificationReport(
-                status: .uncertain,
+                status: .notVerified,
                 summary: "The fix was copied to the clipboard, but VS Code is not frontmost. Focus VS Code and paste.",
                 intendedStateDescription: intendedStateDescription,
                 observedStateDescription: observedStateDescription
@@ -258,7 +379,7 @@ enum DexterActionVerificationEngine {
 
         if executionResult.reportedSuccess {
             return DexterActionVerificationReport(
-                status: .uncertain,
+                status: .notVerified,
                 summary: "Dexter cannot independently verify \(action.type.rawValue) yet; treating the runtime success report as uncertain.",
                 intendedStateDescription: action.humanReadableDescription,
                 observedStateDescription: observedStateDescription
@@ -289,6 +410,9 @@ enum DexterActionVerificationEngine {
         if normalizedIntended == "calculator" && normalizedBundle == "com.apple.calculator" {
             return true
         }
+        if normalizedIntended == "whatsapp" && normalizedBundle.contains("whatsapp") {
+            return true
+        }
         if normalizedIntended.contains("visual studio code") && normalizedBundle == "com.microsoft.vscode" {
             return true
         }
@@ -297,5 +421,12 @@ enum DexterActionVerificationEngine {
 
     private static func normalizeApplicationName(_ name: String) -> String {
         name.lowercased().replacingOccurrences(of: ".app", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+private extension String {
+    var nonEmptyTrimmedValue: String? {
+        let trimmedValue = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedValue.isEmpty ? nil : trimmedValue
     }
 }

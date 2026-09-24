@@ -12,6 +12,30 @@ struct DexterChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             chatHeader
+
+            DexterPointInvokeBanner(
+                session: companionManager.activePointInvokeSession,
+                isPreparing: companionManager.isPreparingPointInvokeSession,
+                onDismiss: { companionManager.clearActivePointInvokeSession() }
+            )
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+
+            if companionManager.dexterScreenContextUIState == .analyzingScreen
+                && !companionManager.isPreparingPointInvokeSession {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Analyzing your screen…")
+                        .font(DexterIdentity.Typography.body())
+                        .foregroundColor(DS.Colors.textSecondary)
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 8)
+                .background(DexterIdentity.accentSubtle.opacity(0.35))
+            }
+
             Divider().background(DS.Colors.borderSubtle)
 
             ZStack {
@@ -25,9 +49,13 @@ struct DexterChatView: View {
                                 && companionManager.voiceInteractionState != .thinking {
                                 HStack {
                                     Spacer(minLength: 0)
-                                    DexterEmptyState { suggestion in
-                                        composerText = suggestion
-                                        companionManager.submitTextMessageToDexter(suggestion)
+                                    if companionManager.activePointInvokeSession != nil {
+                                        pointInvokePromptSuggestions
+                                    } else {
+                                        DexterEmptyState { suggestion in
+                                            composerText = suggestion
+                                            companionManager.submitTextMessageToDexter(suggestion)
+                                        }
                                     }
                                     Spacer(minLength: 0)
                                 }
@@ -92,7 +120,10 @@ struct DexterChatView: View {
                     .foregroundColor(DS.Colors.textTertiary)
             }
             Spacer()
-            DexterContextIndicator(isScreenContextAvailable: companionManager.isDexterScreenContextAvailable)
+            DexterContextIndicator(
+                uiState: companionManager.dexterScreenContextUIState,
+                contextualLabel: companionManager.activePointInvokeSession?.contextualIndicatorLabel
+            )
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)
@@ -123,8 +154,32 @@ struct DexterChatView: View {
     private var streamingDisplayText: String {
         let streaming = companionManager.dexterVoiceCoordinator.streamingResponseText
         if !streaming.isEmpty { return streaming }
+        if companionManager.voiceInteractionState == .speaking {
+            return "Speaking…"
+        }
+        if let spokenError = companionManager.dexterSpokenResponseErrorMessage {
+            return spokenError
+        }
         if let error = companionManager.dexterChatErrorMessage { return error }
         return "Dexter is thinking…"
+    }
+
+    private var pointInvokePromptSuggestions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Try asking:")
+                .font(DexterIdentity.Typography.sectionLabel())
+                .foregroundColor(DS.Colors.textTertiary)
+            DexterSuggestionCard(title: "What is this?") {
+                companionManager.submitTextMessageToDexter("What is this?")
+            }
+            DexterSuggestionCard(title: "Why is this happening?") {
+                companionManager.submitTextMessageToDexter("Why is this happening?")
+            }
+            DexterSuggestionCard(title: "Teach me this.") {
+                companionManager.submitTextMessageToDexter("Teach me this.")
+            }
+        }
+        .frame(maxWidth: 420)
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy) {

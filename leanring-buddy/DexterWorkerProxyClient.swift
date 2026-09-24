@@ -11,6 +11,18 @@ import Foundation
 enum DexterWorkerProxyClient {
     private static let defaultWorkerBaseURL = "https://your-worker-name.your-subdomain.workers.dev"
 
+    /// `true` when `DexterWorkerBaseURL` is set in the app bundle (Info.plist / xcconfig) to a non-placeholder URL.
+    static var isWorkerBaseURLConfigured: Bool {
+        guard let configuredBaseURL = AppBundleConfiguration.stringValue(forKey: "DexterWorkerBaseURL")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !configuredBaseURL.isEmpty else {
+            return false
+        }
+        return configuredBaseURL != defaultWorkerBaseURL
+            && !configuredBaseURL.contains("your-worker-name")
+            && !configuredBaseURL.contains("your-subdomain")
+    }
+
     static var workerBaseURL: String {
         let configuredBaseURL = AppBundleConfiguration.stringValue(forKey: "DexterWorkerBaseURL")
         let trimmed = configuredBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines)

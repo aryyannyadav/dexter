@@ -15,15 +15,21 @@ struct DexterModelGenerationOptions: Equatable {
     var includeSessionConversationHistory: Bool
     /// Passed through for screen-content permission bookkeeping in context assembly.
     var hasPersistedScreenContentGrant: Bool
+    var pointerLocationInScreenSpaceOverride: CGPoint?
+    var usePointAtContextRelevancePlan: Bool
 
     nonisolated init(
         screenCaptureOverride: [DexterScreenCaptureSnapshot]? = nil,
         includeSessionConversationHistory: Bool = true,
-        hasPersistedScreenContentGrant: Bool = false
+        hasPersistedScreenContentGrant: Bool = false,
+        pointerLocationInScreenSpaceOverride: CGPoint? = nil,
+        usePointAtContextRelevancePlan: Bool = false
     ) {
         self.screenCaptureOverride = screenCaptureOverride
         self.includeSessionConversationHistory = includeSessionConversationHistory
         self.hasPersistedScreenContentGrant = hasPersistedScreenContentGrant
+        self.pointerLocationInScreenSpaceOverride = pointerLocationInScreenSpaceOverride
+        self.usePointAtContextRelevancePlan = usePointAtContextRelevancePlan
     }
 }
 
@@ -148,6 +154,43 @@ final class DexterOrchestrator {
         return DexterDevelopmentContextInspectorSnapshot(context: context)
     }
 
+    /// Captures pointer, screen, and environment context for POINT → ASK (in-memory only).
+    func preparePointInvokeSession(
+        pointerLocationInScreenSpace: CGPoint,
+        hasPersistedScreenContentGrant: Bool
+    ) async -> DexterPointInvokeSession {
+        let assemblyRequest = DexterContextAssemblyRequest(
+            userMessage: "",
+            screenCaptureMode: .captureAllDisplaysIfPermitted,
+            includeRecentConversation: false,
+            recentConversationLimit: 0,
+            hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
+            pointerLocationInScreenSpaceOverride: pointerLocationInScreenSpace
+        )
+
+        let dexterContext = await contextAssembler.assembleContext(request: assemblyRequest)
+        let permissionSnapshot = permissionManager.currentPermissionSnapshot(
+            hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
+        )
+
+        let contextSnapshot = DexterContextSnapshotBuilder.make(
+            from: dexterContext,
+            permissionState: DexterContextPermissionState(
+                hasScreenRecordingPermission: permissionSnapshot.hasScreenRecordingPermission,
+                hasAccessibilityPermission: permissionSnapshot.hasAccessibilityPermission,
+                hasScreenContentPermission: permissionSnapshot.hasScreenContentPermission
+            ),
+            userRequestedScreenContext: true
+        )
+
+        return DexterPointInvokeSession(
+            pointerLocationInScreenSpace: pointerLocationInScreenSpace,
+            capturedAt: Date(),
+            contextSnapshot: contextSnapshot,
+            screenCaptureSnapshots: dexterContext.screen.allScreens
+        )
+    }
+
     /// Generates a model response using the configured provider.
     /// Session conversation is appended only via `recordConversationExchange`.
     /// Persistent memory changes only through explicit user intents or workflow state APIs.
@@ -155,7 +198,7 @@ final class DexterOrchestrator {
         userTranscript: String,
         systemPrompt: String,
         options: DexterModelGenerationOptions = DexterModelGenerationOptions(),
-        onTextChunk: @MainActor @Sendable (String) -> Void = { _ in }
+        onTextChunk: @escaping @MainActor @Sendable (String) -> Void = { _ in }
     ) async throws -> DexterOrchestratorModelResponse {
         DexterMemoryIntentProcessor.applyExplicitIntents(fromUserMessage: userTranscript, to: memoryStore)
 
@@ -167,10 +210,29 @@ final class DexterOrchestrator {
         let screenCaptureMode: DexterScreenCaptureMode
         if let screenCaptureOverride = options.screenCaptureOverride {
             screenCaptureMode = .useOverride(screenCaptureOverride)
+        } else if options.usePointAtContextRelevancePlan {
+            screenCaptureMode = .captureAllDisplaysIfPermitted
+        } else if DexterContextRelevancePlanner.shouldRequestScreenCapture(forUserMessage: userTranscript) {
+            screenCaptureMode = .captureCursorDisplayIfPermitted
         } else if DexterContextRelevancePlanner.shouldSkipScreenCapture(forUserMessage: userTranscript) {
             screenCaptureMode = .skip
         } else {
-            screenCaptureMode = .captureAllDisplaysIfPermitted
+            screenCaptureMode = .skip
+        }
+
+        if screenCaptureMode != .skip {
+            DexterVisionTiming.beginVisionTurn()
+        }
+
+        switch screenCaptureMode {
+        case .skip:
+            DexterTurnTrace.log("screen capture mode=skip")
+        case .captureCursorDisplayIfPermitted:
+            DexterTurnTrace.log("screen capture mode=cursorDisplay")
+        case .captureAllDisplaysIfPermitted:
+            DexterTurnTrace.log("screen capture mode=allDisplays")
+        case .useOverride:
+            DexterTurnTrace.log("screen capture mode=override")
         }
 
         let assemblyRequest = DexterContextAssemblyRequest(
@@ -178,40 +240,81 @@ final class DexterOrchestrator {
             screenCaptureMode: screenCaptureMode,
             includeRecentConversation: options.includeSessionConversationHistory,
             recentConversationLimit: 10,
-            hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant
+            hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
+            pointerLocationInScreenSpaceOverride: options.pointerLocationInScreenSpaceOverride
         )
 
-        let dexterContext = await contextAssembler.assembleContext(request: assemblyRequest)
+        DexterTurnTrace.log("context assembly started")
+        DexterDiagnosticLog.context("context assembly started")
+        DexterTurnTrace.log("awaiting context")
+        let dexterContext = try await DexterAsyncTimeout.withTimeout(seconds: 45) { [self] in
+            await contextAssembler.assembleContext(request: assemblyRequest)
+        }
         lastAssembledContext = dexterContext
+        DexterTurnTrace.log("context returned")
+        DexterTurnTrace.log("context assembly completed")
+        DexterDiagnosticLog.context("context assembly finished")
 
         demonstrationPhaseStore?.transition(to: .thinking, detail: "Understanding your request")
 
         let responseMode = DexterTeachingIntentRecognizer.recognizeResponseMode(forUserMessage: userTranscript)
         lastResponseMode = responseMode
 
-        if let workflowResponse = await handleWorkflowTaskIfNeeded(
-            userTranscript: userTranscript,
-            context: dexterContext,
-            hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
-            onTextChunk: onTextChunk
-        ) {
-            return workflowResponse
+        if responseMode == .act {
+            DexterActionDiagnosticLog.action("intent detected")
+            if !DexterObserveOnlyPolicy.isAutonomousComputerControlEnabled {
+                let unavailableMessage =
+                    "Local computer control is currently unavailable. Dexter can still chat and explain your screen."
+                demonstrationPhaseStore?.transition(to: .done, detail: unavailableMessage)
+                await onTextChunk(unavailableMessage)
+                return DexterOrchestratorModelResponse(
+                    fullResponseText: unavailableMessage,
+                    context: dexterContext,
+                    responseMode: responseMode
+                )
+            }
+
+            if let actionResponse = await handleActionRequestIfNeeded(
+                userTranscript: userTranscript,
+                responseMode: responseMode,
+                context: dexterContext,
+                hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
+                onTextChunk: onTextChunk
+            ) {
+                return actionResponse
+            }
+
+            let unresolvedActionMessage =
+                "I understood that as a computer action, but Dexter couldn't execute it safely."
+            demonstrationPhaseStore?.transition(to: .done, detail: unresolvedActionMessage)
+            await onTextChunk(unresolvedActionMessage)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: unresolvedActionMessage,
+                context: dexterContext,
+                responseMode: responseMode
+            )
         }
 
-        if let actionResponse = await handleActionRequestIfNeeded(
-            userTranscript: userTranscript,
-            responseMode: responseMode,
-            context: dexterContext,
-            hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
-            onTextChunk: onTextChunk
-        ) {
-            return actionResponse
+        if DexterObserveOnlyPolicy.isAutonomousComputerControlEnabled {
+            if let workflowResponse = await handleWorkflowTaskIfNeeded(
+                userTranscript: userTranscript,
+                context: dexterContext,
+                hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
+                onTextChunk: onTextChunk
+            ) {
+                return workflowResponse
+            }
         }
 
-        var relevancePlan = DexterContextRelevancePlanner.plan(
-            forUserMessage: userTranscript,
-            context: dexterContext
-        )
+        var relevancePlan: DexterContextRelevancePlan
+        if options.usePointAtContextRelevancePlan {
+            relevancePlan = DexterContextRelevancePlanner.planForPointAtInvocation(context: dexterContext)
+        } else {
+            relevancePlan = DexterContextRelevancePlanner.plan(
+                forUserMessage: userTranscript,
+                context: dexterContext
+            )
+        }
         relevancePlan = DexterTeachingModeContextAdjuster.adjust(
             plan: relevancePlan,
             responseMode: responseMode,
@@ -223,29 +326,52 @@ final class DexterOrchestrator {
             relevancePlan: relevancePlan
         )
 
+        let userRequestedScreenContext = options.usePointAtContextRelevancePlan
+            || DexterContextRelevancePlanner.shouldRequestScreenCapture(forUserMessage: userTranscript)
+
         let teachingInstructions = DexterTeachingModeInstructions.supplementalSystemInstructions(
             for: responseMode,
             hasScreenContext: !structuredModelRequest.images.isEmpty
         )
 
-        let combinedSystemPrompt: String
-        if teachingInstructions.isEmpty {
-            combinedSystemPrompt = systemPrompt
-        } else {
-            combinedSystemPrompt = systemPrompt + "\n\n" + teachingInstructions
-        }
+        let honestyInstructions = DexterContextHonestyInstructions.supplementalSystemInstructions(
+            userRequestedScreenContext: userRequestedScreenContext,
+            screenCaptureAvailability: dexterContext.screen.captureAvailability,
+            hasAttachedScreenshot: !structuredModelRequest.images.isEmpty
+        )
+
+        let combinedSystemPrompt: String = [
+            systemPrompt,
+            teachingInstructions,
+            honestyInstructions
+        ]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
 
         let generationRequest = DexterModelGenerationRequest(
             systemPrompt: combinedSystemPrompt,
             userPrompt: structuredModelRequest.userPrompt,
             images: structuredModelRequest.images,
-            conversationHistory: structuredModelRequest.conversationHistory
+            conversationHistory: structuredModelRequest.conversationHistory,
+            userRequestedScreenContext: userRequestedScreenContext,
+            screenCaptureAvailability: dexterContext.screen.captureAvailability
         )
 
-        let generationResult = try await modelProvider.generateStreamingResponse(
-            request: generationRequest,
-            onTextChunk: onTextChunk
-        )
+        let modelTimeoutSeconds: TimeInterval = generationRequest.images.isEmpty ? 120 : 90
+        DexterTurnTrace.log("visualContextRequired=\(!generationRequest.images.isEmpty)")
+        DexterTurnTrace.log("screenshot/images in request: \(generationRequest.images.count)")
+        DexterDiagnosticLog.model("generation started (images: \(generationRequest.images.count))")
+        DexterTurnTrace.log("awaiting model (timeout \(Int(modelTimeoutSeconds))s)")
+        DexterTurnTrace.log("model request started")
+        let generationResult = try await DexterAsyncTimeout.withTimeout(seconds: modelTimeoutSeconds) { [self] in
+            try await modelProvider.generateStreamingResponse(
+                request: generationRequest,
+                onTextChunk: onTextChunk
+            )
+        }
+        DexterTurnTrace.log("model returned")
+        DexterTurnTrace.log("model response received")
+        DexterDiagnosticLog.model("generation finished")
 
         demonstrationPhaseStore?.transition(to: .done, detail: "Response ready")
 
@@ -355,11 +481,19 @@ final class DexterOrchestrator {
             )
 
         case .action(let proposedAction):
+            if let targetApplicationName = proposedAction.parameters["applicationName"] {
+                DexterActionDiagnosticLog.intent("type=\(proposedAction.type.rawValue) target=\(targetApplicationName)")
+            } else {
+                DexterActionDiagnosticLog.intent("type=\(proposedAction.type.rawValue)")
+            }
+            DexterActionDiagnosticLog.plan("action=\(proposedAction.humanReadableDescription)")
+
             let outcome = await executeVerifiedAction(
                 proposedAction: proposedAction,
                 context: context,
                 hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
             )
+            DexterActionDiagnosticLog.action("completed state=\(outcome.action.state.rawValue)")
             await onTextChunk(outcome.spokenSummary)
             return DexterOrchestratorModelResponse(
                 fullResponseText: outcome.spokenSummary,
@@ -373,13 +507,11 @@ final class DexterOrchestrator {
 @MainActor
 enum DexterOrchestratorFactory {
     static func makeDefault(
-        workerBaseURL: String,
-        modelIdentifier: String,
+        ollamaProvider: OllamaProvider,
         demonstrationPhaseStore: DexterDemonstrationPhaseStore? = nil,
         demonstrationSessionStore: DexterDemonstrationSessionStore? = nil
     ) -> DexterOrchestrator {
-        let claudeAPI = ClaudeAPI(proxyURL: "\(workerBaseURL)/chat", model: modelIdentifier)
-        let modelProvider = ClaudeModelProvider(claudeAPI: claudeAPI)
+        let modelProvider = OllamaModelProviderAdapter(aiProvider: ollamaProvider)
         let memoryStore = DefaultMemoryStore(maxSessionExchanges: 10)
         let taskStateStore = DexterWorkflowTaskStateStore(memoryStore: memoryStore)
         let permissionManager = DexterPermissionManager()

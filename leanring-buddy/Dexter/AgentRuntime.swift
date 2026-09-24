@@ -68,222 +68,196 @@ protocol AgentRuntime: AnyObject {
 final class OpenClawAgentRuntimeAdapter: AgentRuntime {
     let runtimeName = "OpenClaw"
 
-    private let fileManager: FileManager
-    private let openClawApplicationURL: URL
-    private var runningProcess: Process?
+    private let localEnvironment: OpenClawLocalEnvironment
+    private let healthMonitor: OpenClawGatewayHealthMonitor
+    private let nodeInvokeClient: OpenClawNodeInvokeClient
     private(set) var currentExecutionStatus: AgentActionExecutionStatus = .idle
 
     init(
-        openClawApplicationURL: URL = URL(fileURLWithPath: "/Applications/OpenClaw.app"),
-        fileManager: FileManager = .default
+        localEnvironment: OpenClawLocalEnvironment = OpenClawLocalEnvironment(),
+        healthMonitor: OpenClawGatewayHealthMonitor = .shared,
+        nodeInvokeClient: OpenClawNodeInvokeClient = OpenClawNodeInvokeClient()
     ) {
-        self.openClawApplicationURL = openClawApplicationURL
-        self.fileManager = fileManager
+        self.localEnvironment = localEnvironment
+        self.healthMonitor = healthMonitor
+        self.nodeInvokeClient = nodeInvokeClient
     }
 
     func isAvailable() -> Bool {
-        openClawExecutableURL() != nil
+        guard localEnvironment.openClawExecutableURL != nil,
+              healthMonitor.connectionState.isConnected
+        else {
+            return false
+        }
+        return healthMonitor.preferredNodeSnapshot.isConnected
+            && healthMonitor.preferredNodeSnapshot.hasComputerActCommand
     }
 
     func executeAction(_ actionRequest: AgentActionRequest) async throws -> AgentActionResult {
-        guard let openClawExecutableURL = openClawExecutableURL(),
-              let openClawBinaryDirectoryURL = openClawBinaryDirectoryURL()
-        else {
+        guard localEnvironment.openClawExecutableURL != nil else {
             throw AgentRuntimeError.unavailable
         }
 
-        guard actionRequest.actionIdentifier == DexterActionType.openApplication.rawValue,
-              actionRequest.parameters["applicationName"] == "Safari"
-        else {
-            throw AgentRuntimeError.unsupportedAction("Dexter only allows the safe Open Safari action right now.")
+        await healthMonitor.refreshHealthIfNeeded(force: true)
+
+        guard healthMonitor.connectionState.isConnected else {
+            throw AgentRuntimeError.unavailable
         }
+
+        guard OpenClawRuntimeAllowlist.isDexterSupportedAction(actionRequest) else {
+            throw AgentRuntimeError.unsupportedAction(
+                "Dexter does not map this action to an OpenClaw node command yet."
+            )
+        }
+
+        let nodeSnapshot = healthMonitor.preferredNodeSnapshot
+        guard nodeSnapshot.isPaired else {
+            throw AgentRuntimeError.executionFailed(
+                "OpenClaw has no paired Mac node. Open OpenClaw and pair this Mac before running computer actions."
+            )
+        }
+
+        guard nodeSnapshot.isConnected else {
+            throw AgentRuntimeError.executionFailed(
+                "OpenClaw's Mac node is paired but not connected. Open the OpenClaw app, enable Computer Control, and reconnect this Mac."
+            )
+        }
+
+        guard OpenClawRuntimeAllowlist.canExecuteOnConnectedNode(actionRequest, nodeSnapshot: nodeSnapshot) else {
+            throw AgentRuntimeError.executionFailed(
+                "OpenClaw's Mac node is connected but computer.act is not available."
+            )
+        }
+
+        let taskIdentifier = UUID().uuidString
+        DexterOpenClawLog.log("task started id=\(taskIdentifier.prefix(8))")
+        DexterOpenClawLog.log("capability=computer.act")
+        DexterOpenClawLog.log("execution started")
 
         currentExecutionStatus = .queued
-        let messageFileURL = try writeTemporaryMessageFile(for: actionRequest)
-        defer {
-            try? fileManager.removeItem(at: messageFileURL)
-        }
-
-        let process = Process()
-        process.executableURL = openClawExecutableURL
-        process.arguments = [
-            "agent",
-            "exec",
-            "--json",
-            "--timeout",
-            "45",
-            "--message-file",
-            messageFileURL.path
-        ]
-        process.currentDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
-
-        var environment = ProcessInfo.processInfo.environment
-        let existingPath = environment["PATH"] ?? ""
-        environment["PATH"] = "\(openClawBinaryDirectoryURL.path):\(existingPath)"
-        process.environment = environment
-
-        let standardOutputPipe = Pipe()
-        let standardErrorPipe = Pipe()
-        process.standardOutput = standardOutputPipe
-        process.standardError = standardErrorPipe
-
-        runningProcess = process
         currentExecutionStatus = .running
 
-        let terminationStatus = try await run(process: process)
-        runningProcess = nil
+        let executionIdentifier = UUID().uuidString
+        DexterOpenClawLog.log("executionId=\(executionIdentifier.prefix(8))")
 
-        let standardOutput = String(data: standardOutputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let standardError = String(data: standardErrorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let combinedOutput = [standardOutput, standardError]
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .joined(separator: "\n")
+        let invokeResult: OpenClawNodeInvokeResult
+        switch actionRequest.actionIdentifier {
+        case DexterActionType.openApplication.rawValue:
+            invokeResult = try await invokeApplicationLifecycleAction(
+                actionRequest,
+                nodeIdentifier: nodeSnapshot.nodeIdentifier,
+                executionIdentifier: executionIdentifier,
+                openClawActionName: "launch_app"
+            )
+        case DexterActionType.focusApplication.rawValue:
+            invokeResult = try await invokeApplicationLifecycleAction(
+                actionRequest,
+                nodeIdentifier: nodeSnapshot.nodeIdentifier,
+                executionIdentifier: executionIdentifier,
+                openClawActionName: "launch_app"
+            )
+        case DexterActionType.quitApplication.rawValue:
+            invokeResult = try await invokeApplicationLifecycleAction(
+                actionRequest,
+                nodeIdentifier: nodeSnapshot.nodeIdentifier,
+                executionIdentifier: executionIdentifier,
+                openClawActionName: "kill_app"
+            )
+        default:
+            throw AgentRuntimeError.unsupportedAction(
+                "Dexter does not map this action to an OpenClaw node command yet."
+            )
+        }
 
-        let envelope = Self.decodeAgentExecEnvelope(from: combinedOutput)
-        if terminationStatus == 0, envelope?.ok != false, envelope?.status != "error" {
+        DexterOpenClawLog.log("execution result=\(invokeResult.ok ? "ok" : "failed")")
+
+        if invokeResult.ok {
             currentExecutionStatus = .succeeded
+            DexterOpenClawLog.log("task completed")
+            let applicationName = actionRequest.parameters["applicationName"] ?? "the application"
+            let successMessage = successMessage(
+                for: actionRequest.actionIdentifier,
+                applicationName: applicationName
+            )
             return AgentActionResult(
                 reportedSuccess: true,
-                message: envelope?.final?.nonEmptyTrimmedValue ?? "OpenClaw completed the approved Safari action.",
+                message: successMessage,
                 executionStatus: .succeeded,
-                runtimeTaskIdentifier: envelope?.sessionId,
-                rawOutput: combinedOutput
+                runtimeTaskIdentifier: executionIdentifier,
+                rawOutput: invokeResult.combinedOutput
             )
         }
 
         currentExecutionStatus = .failed
-        let failureMessage = envelope?.error?.message?.nonEmptyTrimmedValue
-            ?? envelope?.final?.nonEmptyTrimmedValue
-            ?? combinedOutput.nonEmptyTrimmedValue
-            ?? "OpenClaw exited with status \(terminationStatus)."
+        let failureMessage = invokeResult.errorMessage
+            ?? invokeResult.combinedOutput.nonEmptyTrimmedValue
+            ?? "OpenClaw node invoke failed."
+        DexterOpenClawLog.log("task completed")
         return AgentActionResult(
             reportedSuccess: false,
-            message: "OpenClaw could not execute the approved Safari action: \(failureMessage)",
+            message: failureMessage,
             executionStatus: .failed,
-            runtimeTaskIdentifier: envelope?.sessionId,
-            rawOutput: combinedOutput
+            runtimeTaskIdentifier: executionIdentifier,
+            rawOutput: invokeResult.combinedOutput
         )
     }
 
     func cancelCurrentAction() async -> AgentActionCancellationResult {
-        guard let runningProcess else {
+        nodeInvokeClient.cancelRunningInvoke()
+        if currentExecutionStatus == .running || currentExecutionStatus == .queued {
+            currentExecutionStatus = .cancelled
+            DexterOpenClawLog.log("task cancelled")
             return AgentActionCancellationResult(
-                didCancel: false,
-                message: "OpenClaw has no running action to cancel."
+                didCancel: true,
+                message: "Requested cancellation for the running OpenClaw node invoke."
             )
         }
 
-        runningProcess.terminate()
-        currentExecutionStatus = .cancelled
-        self.runningProcess = nil
         return AgentActionCancellationResult(
-            didCancel: true,
-            message: "Requested cancellation for the running OpenClaw action."
+            didCancel: false,
+            message: "OpenClaw has no running action to cancel."
         )
     }
 
-    private func openClawBinaryDirectoryURL() -> URL? {
-        let architectureDirectoryName = currentArchitectureDirectoryName()
-        let preferredDirectoryURL = openClawApplicationURL
-            .appendingPathComponent("Contents/Resources/node-worker/\(architectureDirectoryName)/bin")
-        if fileManager.fileExists(atPath: preferredDirectoryURL.path) {
-            return preferredDirectoryURL
+    private func invokeApplicationLifecycleAction(
+        _ actionRequest: AgentActionRequest,
+        nodeIdentifier: String,
+        executionIdentifier: String,
+        openClawActionName: String
+    ) async throws -> OpenClawNodeInvokeResult {
+        let applicationName = actionRequest.parameters["applicationName"] ?? ""
+        let parametersJSON: String
+        switch openClawActionName {
+        case "kill_app":
+            parametersJSON = OpenClawComputerActRequestBuilder.killApplicationParametersJSON(
+                applicationName: applicationName,
+                executionIdentifier: executionIdentifier
+            )
+        default:
+            parametersJSON = OpenClawComputerActRequestBuilder.launchApplicationParametersJSON(
+                applicationName: applicationName,
+                executionIdentifier: executionIdentifier
+            )
         }
 
-        for fallbackArchitectureDirectoryName in ["arm64", "x86_64"] where fallbackArchitectureDirectoryName != architectureDirectoryName {
-            let fallbackDirectoryURL = openClawApplicationURL
-                .appendingPathComponent("Contents/Resources/node-worker/\(fallbackArchitectureDirectoryName)/bin")
-            if fileManager.fileExists(atPath: fallbackDirectoryURL.path) {
-                return fallbackDirectoryURL
-            }
-        }
-
-        return nil
+        return try await OpenClawComputerActExecutor.performComputerAct(
+            nodeIdentifier: nodeIdentifier,
+            nodeInvokeClient: nodeInvokeClient,
+            parametersJSON: parametersJSON,
+            executionIdentifier: executionIdentifier
+        )
     }
 
-    private func openClawExecutableURL() -> URL? {
-        guard let openClawBinaryDirectoryURL = openClawBinaryDirectoryURL() else { return nil }
-        let executableURL = openClawBinaryDirectoryURL.appendingPathComponent("openclaw")
-        guard fileManager.fileExists(atPath: executableURL.path) else { return nil }
-        return executableURL
-    }
-
-    private func currentArchitectureDirectoryName() -> String {
-        #if arch(arm64)
-        return "arm64"
-        #else
-        return "x86_64"
-        #endif
-    }
-
-    private func writeTemporaryMessageFile(for actionRequest: AgentActionRequest) throws -> URL {
-        let applicationName = actionRequest.parameters["applicationName"] ?? "Safari"
-        let contextSummary = actionRequest.parameters["contextSummary"] ?? "No additional Dexter context was provided."
-        let message = """
-        Dexter has approved exactly one safe computer action.
-
-        Action: Open \(applicationName).
-        Context: \(contextSummary)
-
-        Use OpenClaw's available computer/browser tools to open \(applicationName). Do not perform any other action. After attempting it, report whether \(applicationName) was opened.
-        """
-
-        let messageFileURL = fileManager.temporaryDirectory
-            .appendingPathComponent("dexter-openclaw-action-\(UUID().uuidString).txt")
-        try message.write(to: messageFileURL, atomically: true, encoding: .utf8)
-        return messageFileURL
-    }
-
-    private func run(process: Process) async throws -> Int32 {
-        try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { completedProcess in
-                continuation.resume(returning: completedProcess.terminationStatus)
-            }
-
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
+    private func successMessage(for actionIdentifier: String, applicationName: String) -> String {
+        switch actionIdentifier {
+        case DexterActionType.quitApplication.rawValue:
+            return "OpenClaw sent quit \(applicationName) through computer.act."
+        case DexterActionType.focusApplication.rawValue:
+            return "OpenClaw focused \(applicationName) through computer.act."
+        default:
+            return "OpenClaw opened \(applicationName) through computer.act."
         }
     }
-
-    private static func decodeAgentExecEnvelope(from output: String) -> OpenClawAgentExecEnvelope? {
-        guard let firstOpeningBraceIndex = output.firstIndex(of: "{"),
-              let lastClosingBraceIndex = output.lastIndex(of: "}"),
-              firstOpeningBraceIndex <= lastClosingBraceIndex
-        else {
-            return nil
-        }
-
-        var candidateStartIndex = firstOpeningBraceIndex
-        while candidateStartIndex <= lastClosingBraceIndex {
-            let jsonCandidate = String(output[candidateStartIndex...lastClosingBraceIndex])
-            if let data = jsonCandidate.data(using: .utf8),
-               let envelope = try? JSONDecoder().decode(OpenClawAgentExecEnvelope.self, from: data) {
-                return envelope
-            }
-
-            guard let nextOpeningBraceIndex = output[output.index(after: candidateStartIndex)...lastClosingBraceIndex].firstIndex(of: "{") else {
-                break
-            }
-            candidateStartIndex = nextOpeningBraceIndex
-        }
-
-        return nil
-    }
-}
-
-private struct OpenClawAgentExecEnvelope: Decodable {
-    let ok: Bool?
-    let status: String?
-    let final: String?
-    let sessionId: String?
-    let error: OpenClawAgentExecError?
-}
-
-private struct OpenClawAgentExecError: Decodable {
-    let message: String?
 }
 
 private extension String {

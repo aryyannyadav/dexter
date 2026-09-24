@@ -14,10 +14,10 @@ struct DexterComposer: View {
         HStack(alignment: .bottom, spacing: 12) {
             if showsVoiceButton {
                 DexterVoiceButton(
-                    interactionState: companionManager.voiceInteractionState,
+                    interactionState: companionManager.microphoneButtonInteractionState,
                     audioPowerLevel: companionManager.currentAudioPowerLevel,
                     isPushToTalkEnabled: companionManager.isPushToTalkEnabled,
-                    hasError: companionManager.dexterChatErrorMessage != nil,
+                    hasError: companionManager.microphoneButtonShowsError,
                     onPress: { companionManager.beginPushToTalkFromVoiceControl() },
                     onRelease: { companionManager.endPushToTalkFromVoiceControl() }
                 )
@@ -25,7 +25,8 @@ struct DexterComposer: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 DexterContextIndicator(
-                    isScreenContextAvailable: companionManager.isDexterScreenContextAvailable,
+                    uiState: companionManager.dexterScreenContextUIState,
+                    contextualLabel: companionManager.activePointInvokeSession?.contextualIndicatorLabel,
                     compact: true
                 )
 

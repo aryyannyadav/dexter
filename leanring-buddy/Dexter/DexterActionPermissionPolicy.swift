@@ -16,14 +16,13 @@ enum DexterActionRuntimeAllowlist {
     /// Actions the composite agent runtime can execute in the hackathon demo.
     static func isRuntimeExecutionSupported(_ action: DexterAction) -> Bool {
         let agentRequest = DexterActionAgentRequestMapper.agentActionRequest(for: action)
-        return MacDexterRuntimeAllowlist.isSupported(agentRequest) || LegacyOpenClawRuntimeAllowlist.isSupported(agentRequest)
-    }
-}
-
-enum LegacyOpenClawRuntimeAllowlist {
-    static func isSupported(_ actionRequest: AgentActionRequest) -> Bool {
-        actionRequest.actionIdentifier == DexterActionType.openApplication.rawValue
-            && actionRequest.parameters["applicationName"] == "Safari"
+        if MacDexterRuntimeAllowlist.isSupported(agentRequest) {
+            return true
+        }
+        if OpenClawRuntimeAllowlist.isDexterSupportedAction(agentRequest) {
+            return OpenClawLocalEnvironment().openClawExecutableURL != nil
+        }
+        return false
     }
 }
 
@@ -52,19 +51,28 @@ extension PermissionManager {
                 requiresScreenRecordingPermission: false
             )
 
-        case .openApplication:
+        case .openApplication, .focusApplication, .quitApplication:
             let applicationName = action.parameters["applicationName"] ?? ""
-            guard DexterDemoApplicationNames.isAllowlistedOpenApplication(applicationName) else {
+            guard !applicationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return DexterActionPermissionDecision(
                     isAllowed: false,
-                    message: "Dexter only allows opening approved demo applications (VS Code, Safari).",
+                    message: "Dexter needs an application name before it can change application state.",
                     requiresAccessibilityPermission: false,
                     requiresScreenRecordingPermission: false
                 )
             }
+            let approvalMessage: String
+            switch action.type {
+            case .focusApplication:
+                approvalMessage = "Dexter approved focusing \(applicationName)."
+            case .quitApplication:
+                approvalMessage = "Dexter approved quitting \(applicationName)."
+            default:
+                approvalMessage = "Dexter approved opening \(applicationName)."
+            }
             return DexterActionPermissionDecision(
                 isAllowed: true,
-                message: "Dexter approved opening \(applicationName).",
+                message: approvalMessage,
                 requiresAccessibilityPermission: false,
                 requiresScreenRecordingPermission: false
             )

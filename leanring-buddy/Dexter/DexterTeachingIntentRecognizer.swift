@@ -46,22 +46,13 @@ enum DexterTeachingIntentRecognizer {
             return false
         }
 
-        if normalizedMessage == "open safari"
-            || normalizedMessage == "please open safari"
-            || normalizedMessage == "open safari for me"
-            || normalizedMessage == "open the safari app" {
+        if DexterApplicationLifecycleIntentParser.parse(from: normalizedMessage) != nil {
             return true
         }
 
         if normalizedMessage == "fix it"
             || normalizedMessage == "fix it for me"
             || normalizedMessage == "apply the fix" {
-            return true
-        }
-
-        if normalizedMessage.contains("open vscode")
-            || normalizedMessage.contains("open vs code")
-            || normalizedMessage.contains("open visual studio code") {
             return true
         }
 
@@ -111,6 +102,7 @@ enum DexterTeachingIntentRecognizer {
     private static func matchesTeachIntent(_ normalizedMessage: String) -> Bool {
         let teachPhrases = [
             "teach me",
+            "teach me this",
             "help me learn",
             "i want to learn",
             "walk me through learning"

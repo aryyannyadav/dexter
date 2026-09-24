@@ -23,6 +23,9 @@ enum DexterAgentRuntimeExecutionGuard {
             group.addTask {
                 try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
                 _ = await agentRuntime.cancelCurrentAction()
+                if agentRuntime.runtimeName == "OpenClaw" {
+                    DexterOpenClawLog.log("task timed out")
+                }
                 throw TimeoutError(timeoutSeconds: timeoutSeconds)
             }
 

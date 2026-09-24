@@ -11,6 +11,22 @@ enum DexterUserFacingErrorMessage {
             return ""
         }
 
+        if let timeoutError = error as? DexterModelRequestTimeoutError {
+            return timeoutError.errorDescription ?? "Dexter timed out waiting for a response."
+        }
+
+        if let contextTimeout = error as? DexterContextAssemblyTimeoutError {
+            return contextTimeout.errorDescription ?? "Dexter timed out while gathering context."
+        }
+
+        if let sttTimeout = error as? DexterSpeechToTextTimeoutError {
+            return sttTimeout.errorDescription ?? "Dexter timed out waiting for speech transcription."
+        }
+
+        if let ollamaError = error as? OllamaProviderError {
+            return ollamaError.errorDescription ?? "Dexter couldn't reach Ollama."
+        }
+
         if let urlError = error as? URLError {
             return forNetworkError(urlError)
         }
@@ -41,9 +57,17 @@ enum DexterUserFacingErrorMessage {
             return ""
         }
         if let urlError = error as? URLError {
-            return "Spoken responses are unavailable right now (\(forNetworkError(urlError))). You can still read Dexter's reply in the panel."
+            return "Couldn't speak the response (\(forNetworkError(urlError))). You can still read Dexter's reply in the panel."
         }
-        return "Spoken responses failed. You can still read Dexter's reply in the panel."
+        return "Couldn't speak the response. You can still read Dexter's reply in the panel."
+    }
+
+    static func forScreenContextUnavailable() -> String {
+        "Screen context unavailable. Enable Screen Recording in System Settings for visual answers."
+    }
+
+    static func forScreenAnalysisFailure() -> String {
+        "Couldn't analyze the current screen."
     }
 
     static func forActionRuntimeError(_ error: Error, runtimeName: String) -> String {
@@ -55,7 +79,7 @@ enum DexterUserFacingErrorMessage {
             case .notConfigured:
                 return "Dexter's action runtime isn't configured."
             case .unavailable:
-                return "Dexter couldn't run that action because the agent runtime is unavailable. For Safari, Dexter uses the Mac runtime first; install OpenClaw only if you need the legacy fallback."
+                return "Dexter can still chat and understand your screen, but local computer actions are currently unavailable because OpenClaw isn't connected. Install OpenClaw, start the local Gateway, then try again."
             case .unsupportedAction(let message):
                 return message
             case .executionFailed(let message):

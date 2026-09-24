@@ -84,7 +84,7 @@ struct DexterMenuBarPanelContent: View {
 
     private var contextRow: some View {
         DexterContextIndicator(
-            isScreenContextAvailable: companionManager.isDexterScreenContextAvailable,
+            uiState: companionManager.dexterScreenContextUIState,
             compact: true
         )
     }
@@ -92,10 +92,10 @@ struct DexterMenuBarPanelContent: View {
     private var voiceRow: some View {
         HStack(spacing: 14) {
             DexterVoiceButton(
-                interactionState: companionManager.voiceInteractionState,
+                interactionState: companionManager.microphoneButtonInteractionState,
                 audioPowerLevel: companionManager.currentAudioPowerLevel,
                 isPushToTalkEnabled: companionManager.isPushToTalkEnabled,
-                hasError: companionManager.dexterChatErrorMessage != nil,
+                hasError: companionManager.microphoneButtonShowsError,
                 size: .compact,
                 onPress: { companionManager.beginPushToTalkFromVoiceControl() },
                 onRelease: { companionManager.endPushToTalkFromVoiceControl() }

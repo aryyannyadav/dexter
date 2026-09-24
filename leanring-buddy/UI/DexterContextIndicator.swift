@@ -6,26 +6,43 @@
 import SwiftUI
 
 struct DexterContextIndicator: View {
-    let isScreenContextAvailable: Bool
+    let uiState: DexterScreenContextUIState
+    var contextualLabel: String?
     var compact: Bool = false
 
     var body: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(isScreenContextAvailable ? DexterIdentity.accent : DS.Colors.textTertiary.opacity(0.5))
+                .fill(indicatorColor)
                 .frame(width: 7, height: 7)
                 .accessibilityHidden(true)
 
-            Text(isScreenContextAvailable ? "Screen context available" : "Screen context unavailable")
+            Text(displayLabel)
                 .font(compact ? DexterIdentity.Typography.monoCaption() : DexterIdentity.Typography.body())
                 .foregroundColor(DS.Colors.textSecondary)
-                .lineLimit(1)
+                .lineLimit(compact ? 1 : 2)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            isScreenContextAvailable
-                ? "Screen context available"
-                : "Screen context unavailable"
-        )
+        .accessibilityLabel(displayLabel)
+    }
+
+    private var displayLabel: String {
+        if let contextualLabel, !contextualLabel.isEmpty {
+            return contextualLabel
+        }
+        return uiState.userFacingLabel
+    }
+
+    private var indicatorColor: Color {
+        switch uiState {
+        case .ready:
+            return DexterIdentity.accent
+        case .analyzingScreen:
+            return DexterIdentity.accentSecondary
+        case .permissionRequired:
+            return DS.Colors.destructiveText.opacity(0.85)
+        case .unavailable:
+            return DS.Colors.textTertiary.opacity(0.5)
+        }
     }
 }
