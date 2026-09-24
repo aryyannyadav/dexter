@@ -43,8 +43,13 @@ struct DexterOrchestratorModelResponse: Equatable {
 final class DexterOrchestrator {
     private(set) var lastAssembledContext: DexterContext?
     private(set) var lastResponseMode: DexterResponseMode = .answer
+    private(set) var lastIntentEngineResult: DexterIntentEngineResult?
+    private(set) var lastVisionResponse: DexterVisionResponse?
+    private(set) var lastTeachingEngineResult: DexterTeachingEngineResult?
+    private(set) var lastSkillEngineResult: DexterSkillEngineResult?
 
     let contextAssembler: DexterContextAssembler
+    let teachingSessionStore: DexterTeachingSessionStore
     let modelProvider: ModelProvider
     let memoryStore: MemoryStore
     let permissionManager: PermissionManager
@@ -60,6 +65,13 @@ final class DexterOrchestrator {
 
     private(set) var lastTypedAction: DexterAction?
     private(set) var pendingActionExecution: DexterPendingActionExecution?
+    let executionStateMachineRegistry: DexterExecutionStateMachineRegistry
+    let toolRegistryGateway: DexterToolRegistryGateway
+    private(set) var lastExecutionSnapshot: DexterExecutionMachineSnapshot?
+    let proactiveAutomationSettingsStore: DexterProactiveAutomationSettingsStore
+    private(set) var lastProactivePipelineOutcome: DexterProactivePipelineOutcome?
+    let workspaceSnapshotStore: DexterWorkspaceSnapshotStore
+    let actionRecoveryLedger: DexterActionRecoveryLedger
 
     init(
         contextAssembler: DexterContextAssembler,
@@ -74,9 +86,16 @@ final class DexterOrchestrator {
         actionContextObserver: DexterActionContextObserver,
         taskStateStore: DexterTaskStateStore,
         demonstrationPhaseStore: DexterDemonstrationPhaseStore? = nil,
-        demonstrationSessionStore: DexterDemonstrationSessionStore? = nil
+        demonstrationSessionStore: DexterDemonstrationSessionStore? = nil,
+        executionStateMachineRegistry: DexterExecutionStateMachineRegistry? = nil,
+        toolRegistryGateway: DexterToolRegistryGateway? = nil,
+        teachingSessionStore: DexterTeachingSessionStore? = nil,
+        proactiveAutomationSettingsStore: DexterProactiveAutomationSettingsStore? = nil,
+        workspaceSnapshotStore: DexterWorkspaceSnapshotStore? = nil,
+        actionRecoveryLedger: DexterActionRecoveryLedger? = nil
     ) {
         self.contextAssembler = contextAssembler
+        self.teachingSessionStore = teachingSessionStore ?? DexterTeachingSessionStore()
         self.modelProvider = modelProvider
         self.memoryStore = memoryStore
         self.permissionManager = permissionManager
@@ -89,6 +108,63 @@ final class DexterOrchestrator {
         self.taskStateStore = taskStateStore
         self.demonstrationPhaseStore = demonstrationPhaseStore
         self.demonstrationSessionStore = demonstrationSessionStore ?? DexterDemonstrationSessionStore()
+        self.executionStateMachineRegistry = executionStateMachineRegistry ?? DexterExecutionStateMachineRegistry()
+        let resolvedPermissionManager = permissionManager
+        self.toolRegistryGateway = toolRegistryGateway ?? DexterToolRegistryGateway(
+            permissionSnapshotProvider: {
+                resolvedPermissionManager.currentPermissionSnapshot(hasPersistedScreenContentGrant: false)
+            }
+        )
+        self.proactiveAutomationSettingsStore = proactiveAutomationSettingsStore
+            ?? UserDefaultsDexterProactiveAutomationSettingsStore()
+        self.workspaceSnapshotStore = workspaceSnapshotStore ?? DexterWorkspaceSnapshotStore()
+        self.actionRecoveryLedger = actionRecoveryLedger ?? DexterActionRecoveryLedger()
+
+        if let runtimeUIStateStore = demonstrationPhaseStore {
+            executionStateMachineRegistry.onExecutionSnapshotChanged = { snapshot in
+                runtimeUIStateStore.applyExecutionSnapshot(snapshot)
+            }
+        }
+    }
+
+    func setProactiveAutomationEnabled(for eventKind: DexterProactiveEventKind, isEnabled: Bool) {
+        var registrations = proactiveAutomationSettingsStore.automationRegistrations
+        guard let index = registrations.firstIndex(where: { $0.eventKind == eventKind }) else { return }
+        registrations[index].isExplicitlyEnabledByUser = isEnabled
+        proactiveAutomationSettingsStore.automationRegistrations = registrations
+    }
+
+    /// Proactive foundation: detect → explain → suggest → ask permission (execute only when explicitly enabled + granted).
+    func evaluateProactiveSignals(
+        detectionInput: DexterProactiveDetectionInput,
+        context: DexterContext,
+        userGrantedProactiveExecution: Bool = false
+    ) async -> DexterProactivePipelineOutcome? {
+        let outcome = await DexterProactiveFoundationEngine.detectAndProcessFirstEvent(
+            detectionInput: detectionInput,
+            context: context,
+            automationRegistrations: proactiveAutomationSettingsStore.automationRegistrations,
+            userGrantedProactiveExecution: userGrantedProactiveExecution,
+            executeVerifiedAction: { [weak self] proposedAction in
+                guard let self else {
+                    return DexterActionExecutionOutcome(
+                        action: proposedAction.withState(.failed),
+                        spokenSummary: "Dexter is unavailable.",
+                        pendingConfirmation: nil,
+                        verificationReport: nil,
+                        turnRecord: nil,
+                        executionSnapshot: nil,
+                        recoveryMetadata: nil
+                    )
+                }
+                return await executeVerifiedAction(
+                    proposedAction: proposedAction,
+                    context: context
+                )
+            }
+        )
+        lastProactivePipelineOutcome = outcome
+        return outcome
     }
 
     var actionPermissionSettings: DexterActionPermissionSettings {
@@ -107,12 +183,54 @@ final class DexterOrchestrator {
     }
 
     func cancelInFlightComputerActionIfNeeded() async {
+        if let latestExecutionIdentifier = lastExecutionSnapshot?.executionIdentifier {
+            executionStateMachineRegistry.requestCancellation(forExecutionIdentifier: latestExecutionIdentifier)
+            try? executionStateMachineRegistry
+                .machine(forExecutionIdentifier: latestExecutionIdentifier)?
+                .cancel(message: "Dexter stopped the in-flight action.")
+        }
         _ = await agentRuntime.cancelCurrentAction()
+        _ = await toolRegistryGateway.cancelInFlightExecution()
+    }
+
+    /// Global emergency stop: cancel automation, pending actions, and agent/tool loops.
+    func activateGlobalEmergencyStop() async {
+        DexterUserTrustControls.disableDexterAutomation(emergencyStopController: DexterEmergencyStopController.shared)
+        cancelPendingActionConfirmation()
+        await cancelInFlightComputerActionIfNeeded()
+        DexterUserTrustControls.revokeActionAutoApprove(actionPermissionSettingsStore: actionPermissionSettingsStore)
+        DexterUserTrustControls.revokeProactiveAutomations(settingsStore: proactiveAutomationSettingsStore)
+        demonstrationPhaseStore?.transition(to: .cancelled, detail: "Emergency stop")
+    }
+
+    func recoverDexterToSafeIdle(stopSpokenOutput: () -> Void) async -> String {
+        await DexterTrustRecoveryEngine.recoverToSafeIdle(
+            emergencyStopController: DexterEmergencyStopController.shared,
+            clearPendingConfirmations: { cancelPendingActionConfirmation() },
+            cancelInFlightActions: { await cancelInFlightComputerActionIfNeeded() },
+            stopSpokenOutput: stopSpokenOutput
+        )
+    }
+
+    func clearDexterMemoryAndRevokeAutomationPreferences() {
+        DexterUserTrustControls.clearAllDexterMemory(memoryStore: memoryStore)
+        DexterUserTrustControls.revokeActionAutoApprove(actionPermissionSettingsStore: actionPermissionSettingsStore)
+        DexterUserTrustControls.revokeProactiveAutomations(settingsStore: proactiveAutomationSettingsStore)
+    }
+
+    func releaseEmergencyStopAfterUserAcknowledgement() {
+        DexterEmergencyStopController.shared.releaseEmergencyStopAfterUserAcknowledgement()
     }
 
     func cancelPendingActionConfirmation() {
+        if let executionIdentifier = pendingActionExecution?.executionIdentifier {
+            executionStateMachineRegistry.requestCancellation(forExecutionIdentifier: executionIdentifier)
+            try? executionStateMachineRegistry
+                .machine(forExecutionIdentifier: executionIdentifier)?
+                .cancel(message: "You cancelled the pending action.")
+        }
         pendingActionExecution = nil
-        demonstrationPhaseStore?.transition(to: .done, detail: "Action cancelled")
+        demonstrationPhaseStore?.transition(to: .cancelled, detail: "Action cancelled")
         if let lastTypedAction, lastTypedAction.state == .awaitingConfirmation {
             let cancelledAction = lastTypedAction.withState(.cancelled)
             self.lastTypedAction = cancelledAction
@@ -128,12 +246,17 @@ final class DexterOrchestrator {
             actionId: pendingActionExecution.action.id,
             riskLevelAtApprovalTime: DexterActionRiskClassifier.resolvedRiskLevel(for: pendingActionExecution.action)
         )
+        let pending = pendingActionExecution
         self.pendingActionExecution = nil
+        let resumedStateMachine = pending.executionIdentifier.flatMap {
+            executionStateMachineRegistry.machine(forExecutionIdentifier: $0)
+        }
         return await executeVerifiedAction(
-            proposedAction: pendingActionExecution.action,
-            context: pendingActionExecution.context,
-            hasPersistedScreenContentGrant: pendingActionExecution.hasPersistedScreenContentGrant,
-            confirmationGrant: confirmationGrant
+            proposedAction: pending.action,
+            context: pending.context,
+            hasPersistedScreenContentGrant: pending.hasPersistedScreenContentGrant,
+            confirmationGrant: confirmationGrant,
+            executionStateMachine: resumedStateMachine
         )
     }
 
@@ -200,10 +323,41 @@ final class DexterOrchestrator {
         options: DexterModelGenerationOptions = DexterModelGenerationOptions(),
         onTextChunk: @escaping @MainActor @Sendable (String) -> Void = { _ in }
     ) async throws -> DexterOrchestratorModelResponse {
-        DexterMemoryIntentProcessor.applyExplicitIntents(fromUserMessage: userTranscript, to: memoryStore)
+        memoryStore.observeUserMessageForInference(userTranscript)
+        let memoryIntentOutcome = memoryStore.processMemoryIntents(fromUserMessage: userTranscript)
+        switch memoryIntentOutcome {
+        case .userFacingResponse:
+            DexterObservabilityLog.memory("intent_outcome=user_facing_response")
+        case .appliedSilently:
+            DexterObservabilityLog.memory("intent_outcome=applied_silently")
+        case .inferenceConfirmationPrompt:
+            DexterObservabilityLog.memory("intent_outcome=inference_confirmation_prompt")
+        case .noMemoryIntent:
+            break
+        }
+        if case .userFacingResponse(let memoryResponse) = memoryIntentOutcome {
+            demonstrationPhaseStore?.transition(to: .done, detail: "Memory")
+            await onTextChunk(memoryResponse)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: memoryResponse,
+                context: DexterContext(userMessage: DexterUserMessageContext(text: userTranscript)),
+                responseMode: .answer
+            )
+        }
+
+        if memoryIntentOutcome == .noMemoryIntent,
+           let inferencePrompt = memoryStore.consumeInferenceConfirmationPrompt() {
+            demonstrationPhaseStore?.transition(to: .done, detail: "Memory suggestion")
+            await onTextChunk(inferencePrompt)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: inferencePrompt,
+                context: DexterContext(userMessage: DexterUserMessageContext(text: userTranscript)),
+                responseMode: .answer
+            )
+        }
 
         demonstrationPhaseStore?.transition(
-            to: .seeing,
+            to: DexterDemonstrationPhase.seeing,
             detail: "Screenshot, pointer, active app, and window"
         )
 
@@ -235,32 +389,148 @@ final class DexterOrchestrator {
             DexterTurnTrace.log("screen capture mode=override")
         }
 
+        let contextPerformanceProfile: DexterContextPerformanceProfile =
+            DexterTrivialQuestionClassifier.isTrivialQuestion(userTranscript) ? .minimal : .standard
+
         let assemblyRequest = DexterContextAssemblyRequest(
             userMessage: userTranscript,
             screenCaptureMode: screenCaptureMode,
             includeRecentConversation: options.includeSessionConversationHistory,
-            recentConversationLimit: 10,
+            recentConversationLimit: 8,
             hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
-            pointerLocationInScreenSpaceOverride: options.pointerLocationInScreenSpaceOverride
+            pointerLocationInScreenSpaceOverride: options.pointerLocationInScreenSpaceOverride,
+            performanceProfile: contextPerformanceProfile
         )
 
         DexterTurnTrace.log("context assembly started")
         DexterDiagnosticLog.context("context assembly started")
         DexterTurnTrace.log("awaiting context")
-        let dexterContext = try await DexterAsyncTimeout.withTimeout(seconds: 45) { [self] in
-            await contextAssembler.assembleContext(request: assemblyRequest)
+        let assemblyResult = try await DexterTaskTraceRecorder.shared.measure(bucket: .context) {
+            try await DexterAsyncTimeout.withTimeout(seconds: 45) { [self] in
+                await contextAssembler.assembleContextPacket(request: assemblyRequest)
+            }
         }
+        let dexterContext = assemblyResult.legacyContext
+        let contextPacket = assemblyResult.packet
         lastAssembledContext = dexterContext
         DexterTurnTrace.log("context returned")
         DexterTurnTrace.log("context assembly completed")
         DexterDiagnosticLog.context("context assembly finished")
+        DexterPerformanceTiming.markContextAssemblyCompleted()
 
-        demonstrationPhaseStore?.transition(to: .thinking, detail: "Understanding your request")
+        if let workspaceResponse = await handleWorkspaceIntentIfNeeded(
+            userTranscript: userTranscript,
+            dexterContext: dexterContext,
+            contextPacket: contextPacket,
+            hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
+            onTextChunk: onTextChunk
+        ) {
+            return workspaceResponse
+        }
 
-        let responseMode = DexterTeachingIntentRecognizer.recognizeResponseMode(forUserMessage: userTranscript)
-        lastResponseMode = responseMode
+        if let undoResponse = await handleActionUndoIfNeeded(
+            userTranscript: userTranscript,
+            dexterContext: dexterContext,
+            hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
+            onTextChunk: onTextChunk
+        ) {
+            return undoResponse
+        }
 
-        if responseMode == .act {
+        if let accountabilityQueryKind = DexterAccountabilityIntentRecognizer.recognizeQuery(
+            fromUserMessage: userTranscript
+        ) {
+            let accountabilityResponse = DexterAccountabilityQueryEngine.respond(
+                queryKind: accountabilityQueryKind,
+                snapshot: memoryStore.accountabilityTaskSnapshot(),
+                legacyTaskDescription: memoryStore.activeTaskDescription,
+                workflowSummary: memoryStore.workflowContext?.summary
+            )
+            demonstrationPhaseStore?.transition(to: .done, detail: "Accountability")
+            await onTextChunk(accountabilityResponse)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: accountabilityResponse,
+                context: dexterContext,
+                responseMode: .answer
+            )
+        }
+
+        if let personalContextQueryKind = DexterPersonalContextIntentRecognizer.recognize(fromUserMessage: userTranscript),
+           DexterAccountabilityIntentRecognizer.recognizeQuery(fromUserMessage: userTranscript) == nil {
+            let authorizedPersonalContextInput = DexterAuthorizedPersonalContextInput.fromDexterContext(dexterContext)
+            let personalContextGraph = DexterPersonalContextGraphBuilder.build(
+                memoryStore: memoryStore,
+                authorizedInput: authorizedPersonalContextInput
+            )
+            let personalContextResponse = DexterPersonalContextQueryEngine.respond(
+                queryKind: personalContextQueryKind,
+                graph: personalContextGraph,
+                authorizedInput: authorizedPersonalContextInput
+            )
+            demonstrationPhaseStore?.transition(to: .done, detail: "Personal context")
+            await onTextChunk(personalContextResponse)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: personalContextResponse,
+                context: dexterContext,
+                responseMode: .answer
+            )
+        }
+
+        demonstrationPhaseStore?.transition(to: .understanding, detail: "Understanding your request")
+
+        let intentEngineResult = DexterPerformanceTiming.measureSync(bucket: .intent) {
+            DexterIntentEngine.evaluate(userMessage: userTranscript, context: dexterContext)
+        }
+        lastIntentEngineResult = intentEngineResult
+
+        let skillEngineResult = DexterSkillEngine.evaluate(
+            userMessage: userTranscript,
+            context: dexterContext,
+            intentEngineResult: intentEngineResult
+        )
+        lastSkillEngineResult = skillEngineResult
+
+        if intentEngineResult.requiresClarification,
+           !DexterSkillEngine.shouldDeferIntentClarification(
+               intentEngineResult: intentEngineResult,
+               skillEngineResult: skillEngineResult
+           ),
+           let clarificationPrompt = intentEngineResult.clarificationPrompt {
+            demonstrationPhaseStore?.transition(to: .done, detail: "Needs clarification")
+            await onTextChunk(clarificationPrompt)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: clarificationPrompt,
+                context: dexterContext,
+                responseMode: .answer
+            )
+        }
+
+        let responseMode = DexterIntentResponseModeMapper.responseMode(for: intentEngineResult.structuredIntent)
+
+        let teachingEngineResult = DexterTeachingEngine.evaluate(
+            userMessage: userTranscript,
+            contextPacket: contextPacket,
+            structuredIntent: intentEngineResult.structuredIntent,
+            sessionStore: teachingSessionStore
+        )
+        lastTeachingEngineResult = teachingEngineResult
+
+        if let blockingTeachingMessage = teachingEngineResult.blockingUserMessage {
+            demonstrationPhaseStore?.transition(to: .done, detail: "Waiting for step completion")
+            await onTextChunk(blockingTeachingMessage)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: blockingTeachingMessage,
+                context: dexterContext,
+                responseMode: teachingEngineResult.mapsToResponseMode
+            )
+        }
+
+        let effectiveResponseMode = teachingEngineResult.isTeachingTurn
+            ? teachingEngineResult.mapsToResponseMode
+            : responseMode
+        lastResponseMode = effectiveResponseMode
+
+        if effectiveResponseMode == .act {
             DexterActionDiagnosticLog.action("intent detected")
             if !DexterObserveOnlyPolicy.isAutonomousComputerControlEnabled {
                 let unavailableMessage =
@@ -270,13 +540,13 @@ final class DexterOrchestrator {
                 return DexterOrchestratorModelResponse(
                     fullResponseText: unavailableMessage,
                     context: dexterContext,
-                    responseMode: responseMode
+                    responseMode: effectiveResponseMode
                 )
             }
 
             if let actionResponse = await handleActionRequestIfNeeded(
                 userTranscript: userTranscript,
-                responseMode: responseMode,
+                responseMode: effectiveResponseMode,
                 context: dexterContext,
                 hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
                 onTextChunk: onTextChunk
@@ -291,11 +561,20 @@ final class DexterOrchestrator {
             return DexterOrchestratorModelResponse(
                 fullResponseText: unresolvedActionMessage,
                 context: dexterContext,
-                responseMode: responseMode
+                responseMode: effectiveResponseMode
             )
         }
 
         if DexterObserveOnlyPolicy.isAutonomousComputerControlEnabled {
+            if let learnedWorkflowResponse = await handleLearnedWorkflowIfNeeded(
+                userTranscript: userTranscript,
+                context: dexterContext,
+                hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
+                onTextChunk: onTextChunk
+            ) {
+                return learnedWorkflowResponse
+            }
+
             if let workflowResponse = await handleWorkflowTaskIfNeeded(
                 userTranscript: userTranscript,
                 context: dexterContext,
@@ -317,22 +596,66 @@ final class DexterOrchestrator {
         }
         relevancePlan = DexterTeachingModeContextAdjuster.adjust(
             plan: relevancePlan,
-            responseMode: responseMode,
+            responseMode: effectiveResponseMode,
+            teachingMode: teachingEngineResult.isTeachingTurn ? teachingEngineResult.teachingMode : nil,
+            context: dexterContext
+        )
+        relevancePlan = DexterSkillContextAdjuster.adjust(
+            plan: relevancePlan,
+            skill: skillEngineResult.matchedSkill,
             context: dexterContext
         )
 
+        let contextPacketSummary = DexterTeachingPacketPromptBuilder.contextSummary(from: contextPacket)
+        let teachingPromptSection: String?
+        if teachingEngineResult.isTeachingTurn {
+            teachingPromptSection = """
+            mode: \(teachingEngineResult.teachingMode.rawValue)
+            style: \(teachingEngineResult.teachingStyle.rawValue)
+            \(contextPacketSummary)
+            """
+        } else {
+            teachingPromptSection = nil
+        }
+
+        let availableToolsPromptSection = await toolRegistryGateway.modelToolsPromptSection()
+        let skillPromptSection: String?
+        if let matchedSkill = skillEngineResult.matchedSkill {
+            skillPromptSection = DexterSkillPromptBuilder.promptSection(
+                for: matchedSkill,
+                mergedPlan: skillEngineResult.mergedIntentPlan
+            )
+        } else {
+            skillPromptSection = nil
+        }
+
         let structuredModelRequest = DexterStructuredModelRequestBuilder.build(
             dexterContext: dexterContext,
-            relevancePlan: relevancePlan
+            relevancePlan: relevancePlan,
+            availableToolsPromptSection: availableToolsPromptSection,
+            teachingPromptSection: teachingPromptSection,
+            skillPromptSection: skillPromptSection
         )
 
         let userRequestedScreenContext = options.usePointAtContextRelevancePlan
             || DexterContextRelevancePlanner.shouldRequestScreenCapture(forUserMessage: userTranscript)
 
-        let teachingInstructions = DexterTeachingModeInstructions.supplementalSystemInstructions(
-            for: responseMode,
-            hasScreenContext: !structuredModelRequest.images.isEmpty
-        )
+        let teachingInstructions: String
+        if teachingEngineResult.isTeachingTurn {
+            teachingInstructions = DexterTeachingModeInstructions.supplementalSystemInstructions(
+                for: effectiveResponseMode,
+                teachingMode: teachingEngineResult.teachingMode,
+                teachingStyle: teachingEngineResult.teachingStyle,
+                hasScreenContext: !structuredModelRequest.images.isEmpty,
+                teachingSession: teachingSessionStore.activeSession,
+                contextPacketSummary: contextPacketSummary
+            )
+        } else {
+            teachingInstructions = DexterTeachingModeInstructions.supplementalSystemInstructions(
+                for: effectiveResponseMode,
+                hasScreenContext: !structuredModelRequest.images.isEmpty
+            )
+        }
 
         let honestyInstructions = DexterContextHonestyInstructions.supplementalSystemInstructions(
             userRequestedScreenContext: userRequestedScreenContext,
@@ -343,10 +666,27 @@ final class DexterOrchestrator {
         let combinedSystemPrompt: String = [
             systemPrompt,
             teachingInstructions,
-            honestyInstructions
+            honestyInstructions,
+            DexterExternalContentAuthorityPolicy.externalContentIsDataNotAuthorityInstruction
         ]
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
+
+        var preparedVisionPayload: DexterPreparedVisionPayload?
+        var visionRequest: DexterVisionRequest?
+        if !structuredModelRequest.images.isEmpty {
+            preparedVisionPayload = DexterVisionRequestPreparer.preparePayload(
+                dexterContext: dexterContext,
+                userMessage: userTranscript
+            )
+            if let preparedVisionPayload {
+                visionRequest = DexterVisionRequestPreparer.buildVisionRequest(
+                    structuredUserPrompt: structuredModelRequest.userPrompt,
+                    dexterContext: dexterContext,
+                    preparedPayload: preparedVisionPayload
+                )
+            }
+        }
 
         let generationRequest = DexterModelGenerationRequest(
             systemPrompt: combinedSystemPrompt,
@@ -354,7 +694,9 @@ final class DexterOrchestrator {
             images: structuredModelRequest.images,
             conversationHistory: structuredModelRequest.conversationHistory,
             userRequestedScreenContext: userRequestedScreenContext,
-            screenCaptureAvailability: dexterContext.screen.captureAvailability
+            screenCaptureAvailability: dexterContext.screen.captureAvailability,
+            preparedVisionPayload: preparedVisionPayload,
+            visionRequest: visionRequest
         )
 
         let modelTimeoutSeconds: TimeInterval = generationRequest.images.isEmpty ? 120 : 90
@@ -363,22 +705,52 @@ final class DexterOrchestrator {
         DexterDiagnosticLog.model("generation started (images: \(generationRequest.images.count))")
         DexterTurnTrace.log("awaiting model (timeout \(Int(modelTimeoutSeconds))s)")
         DexterTurnTrace.log("model request started")
-        let generationResult = try await DexterAsyncTimeout.withTimeout(seconds: modelTimeoutSeconds) { [self] in
-            try await modelProvider.generateStreamingResponse(
-                request: generationRequest,
-                onTextChunk: onTextChunk
-            )
+        let preferredCloudModelIdentifier = (modelProvider as? DexterModelGateway)?.preferredCloudModelIdentifier
+            ?? modelProvider.modelIdentifier
+        let modelRoutingContext = DexterModelGatewayRoutingContext.inferred(
+            from: generationRequest,
+            intentComplexity: intentEngineResult.complexity,
+            userMessage: userTranscript,
+            prefersLocalProcessingSetting: DexterModelGatewayPreferences.prefersLocalProcessing,
+            preferredCloudModelIdentifier: preferredCloudModelIdentifier
+        )
+
+        let generationResult = try await DexterTaskTraceRecorder.shared.measure(bucket: .model) {
+            try await DexterAsyncTimeout.withTimeout(seconds: modelTimeoutSeconds) { [self] in
+                try await modelProvider.generateStreamingResponse(
+                    request: generationRequest,
+                    routingContext: modelRoutingContext,
+                    onTextChunk: onTextChunk
+                )
+            }
         }
         DexterTurnTrace.log("model returned")
         DexterTurnTrace.log("model response received")
         DexterDiagnosticLog.model("generation finished")
 
-        demonstrationPhaseStore?.transition(to: .done, detail: "Response ready")
+        lastVisionResponse = generationResult.visionResponse
+
+        if teachingEngineResult.isTeachingTurn,
+           teachingEngineResult.teachingMode == .stepByStep
+            || teachingEngineResult.teachingMode == .interactiveTutorial {
+            let instructionSummary = String(generationResult.fullResponseText.prefix(280))
+            DexterTeachingEngine.markInstructionDelivered(
+                instructionSummary: instructionSummary,
+                sessionStore: teachingSessionStore
+            )
+        }
+
+        if executionStateMachineRegistry.latestSnapshot()?.currentPhase == .verifying
+            || executionStateMachineRegistry.latestSnapshot()?.currentPhase == .executing {
+            // UI stays on ACTING / VERIFYING until the execution state machine completes.
+        } else {
+            demonstrationPhaseStore?.transition(to: .done, detail: "Response ready")
+        }
 
         return DexterOrchestratorModelResponse(
             fullResponseText: generationResult.fullResponseText,
             context: dexterContext,
-            responseMode: responseMode
+            responseMode: effectiveResponseMode
         )
     }
 
@@ -387,8 +759,11 @@ final class DexterOrchestrator {
         proposedAction: DexterAction,
         context: DexterContext,
         hasPersistedScreenContentGrant: Bool = false,
-        confirmationGrant: DexterActionConfirmationGrant? = nil
+        confirmationGrant: DexterActionConfirmationGrant? = nil,
+        executionStateMachine: DexterExecutionStateMachine? = nil
     ) async -> DexterActionExecutionOutcome {
+        let parentTaskIdentifier = taskStateStore.activeWorkflowTask?.id
+            ?? taskStateStore.activeLearnedWorkflowRun?.id
         let outcome = await DexterActionExecutionPipeline.execute(
             proposedAction: proposedAction,
             context: context,
@@ -401,11 +776,209 @@ final class DexterOrchestrator {
             actionPermissionSettings: actionPermissionSettingsStore.currentSettings,
             hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
             confirmationGrant: confirmationGrant,
-            demonstrationPhaseStore: demonstrationPhaseStore
+            demonstrationPhaseStore: demonstrationPhaseStore,
+            executionStateMachine: executionStateMachine,
+            executionStateMachineRegistry: executionStateMachineRegistry,
+            parentTaskIdentifier: parentTaskIdentifier,
+            actionRecoveryLedger: actionRecoveryLedger
         )
         lastTypedAction = outcome.action
         pendingActionExecution = outcome.pendingConfirmation
+        lastExecutionSnapshot = outcome.executionSnapshot
+        if let executionSnapshot = outcome.executionSnapshot {
+            demonstrationPhaseStore?.applyExecutionSnapshot(executionSnapshot)
+        }
         return outcome
+    }
+
+    private func handleActionUndoIfNeeded(
+        userTranscript: String,
+        dexterContext: DexterContext,
+        hasPersistedScreenContentGrant: Bool,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async -> DexterOrchestratorModelResponse? {
+        guard DexterActionRecoveryIntentRecognizer.recognizeUndo(fromUserMessage: userTranscript) else {
+            return nil
+        }
+
+        guard let undoableEntry = actionRecoveryLedger.latestUndoableEntry(),
+              let rollbackAction = DexterActionRecoveryEngine.rollbackAction(for: undoableEntry.metadata) else {
+            let message = DexterActionRecoveryCopy.undoUnavailableMessage(for: actionRecoveryLedger.latestEntry()?.metadata)
+            demonstrationPhaseStore?.transition(to: .done, detail: "Undo unavailable")
+            await onTextChunk(message)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: message,
+                context: dexterContext,
+                responseMode: .answer
+            )
+        }
+
+        demonstrationPhaseStore?.transition(to: .planning, detail: "Undo last safe action")
+        let planMessage = DexterActionRecoveryEngine.userFacingUndoPlan(entry: undoableEntry)
+        await onTextChunk(planMessage)
+
+        let outcome = await executeVerifiedAction(
+            proposedAction: rollbackAction,
+            context: dexterContext,
+            hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
+        )
+
+        let combinedMessage = "\(planMessage) \(outcome.spokenSummary)"
+        await onTextChunk(outcome.spokenSummary)
+        return DexterOrchestratorModelResponse(
+            fullResponseText: combinedMessage,
+            context: dexterContext,
+            responseMode: .guide
+        )
+    }
+
+    private func handleWorkspaceIntentIfNeeded(
+        userTranscript: String,
+        dexterContext: DexterContext,
+        contextPacket: DexterContextPacket,
+        hasPersistedScreenContentGrant: Bool,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async -> DexterOrchestratorModelResponse? {
+        let isSaveIntent = DexterWorkspaceIntentRecognizer.recognizeSave(fromUserMessage: userTranscript)
+        let isRestoreIntent = DexterWorkspaceIntentRecognizer.recognizeRestore(fromUserMessage: userTranscript)
+        guard isSaveIntent || isRestoreIntent else { return nil }
+
+        let authorizedPersonalContextInput = DexterAuthorizedPersonalContextInput.fromDexterContextPacket(contextPacket)
+        let personalContextGraph = DexterPersonalContextGraphBuilder.build(
+            memoryStore: memoryStore,
+            authorizedInput: authorizedPersonalContextInput
+        )
+        let accountabilitySnapshot = memoryStore.accountabilityTaskSnapshot()
+
+        if isSaveIntent {
+            let snapshot = DexterWorkspaceSnapshotCapture.capture(
+                authorizedInput: authorizedPersonalContextInput,
+                personalContextGraph: personalContextGraph,
+                accountabilitySnapshot: accountabilitySnapshot
+            )
+            workspaceSnapshotStore.save(snapshot)
+            let saveMessage = DexterWorkspaceSnapshotCapture.userFacingSaveSummary(snapshot: snapshot)
+            demonstrationPhaseStore?.transition(to: .done, detail: "Workspace saved")
+            await onTextChunk(saveMessage)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: saveMessage,
+                context: dexterContext,
+                responseMode: .answer
+            )
+        }
+
+        guard let desiredSnapshot = workspaceSnapshotStore.latestSnapshot() else {
+            let message =
+                "I do not have a saved workspace snapshot yet. Say “save my workspace” while your apps and task are set up the way you want."
+            demonstrationPhaseStore?.transition(to: .done, detail: "No workspace snapshot")
+            await onTextChunk(message)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: message,
+                context: dexterContext,
+                responseMode: .answer
+            )
+        }
+
+        demonstrationPhaseStore?.transition(to: .planning, detail: "Restoring workspace")
+
+        let currentState = DexterWorkspaceCurrentState(
+            authorizedInput: authorizedPersonalContextInput,
+            personalContextGraph: personalContextGraph,
+            accountabilitySnapshot: accountabilitySnapshot
+        )
+
+        let restoreResult = await DexterWorkspaceRestoreEngine.runRestore(
+            desiredSnapshot: desiredSnapshot,
+            currentState: currentState,
+            memoryStore: memoryStore,
+            executeVerifiedAction: { [self] proposedAction in
+                await executeVerifiedAction(
+                    proposedAction: proposedAction,
+                    context: dexterContext,
+                    hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
+                )
+            }
+        )
+
+        if restoreResult.stoppedAwaitingPermission {
+            demonstrationPhaseStore?.transition(to: .waitingForApproval, detail: "Workspace restore")
+        } else {
+            demonstrationPhaseStore?.transition(to: .done, detail: "Workspace restore")
+        }
+
+        await onTextChunk(restoreResult.userMessage)
+        return DexterOrchestratorModelResponse(
+            fullResponseText: restoreResult.userMessage,
+            context: dexterContext,
+            responseMode: .guide
+        )
+    }
+
+    private func handleLearnedWorkflowIfNeeded(
+        userTranscript: String,
+        context: DexterContext,
+        hasPersistedScreenContentGrant: Bool,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async -> DexterOrchestratorModelResponse? {
+        let hasActiveLearnedWorkflow = taskStateStore.activeLearnedWorkflowRun?.isTerminal == false
+
+        if !hasActiveLearnedWorkflow {
+            if let matchedWorkflow = DexterWorkflowCatalog.workflowMatchingTrigger(userMessage: userTranscript) {
+                taskStateStore.activeLearnedWorkflowRun = DexterWorkflowRunSession(
+                    workflowIdentifier: matchedWorkflow.workflowIdentifier,
+                    workflowName: matchedWorkflow.name
+                )
+            } else if let skillResult = lastSkillEngineResult,
+                      let matchedSkill = skillResult.matchedSkill,
+                      skillResult.matchConfidence >= 0.75,
+                      let workflowIdentifier = matchedSkill.workflow.workflowIdentifier,
+                      DexterWorkflowCatalog.workflow(forIdentifier: workflowIdentifier) != nil {
+                taskStateStore.activeLearnedWorkflowRun = DexterWorkflowRunSession(
+                    workflowIdentifier: workflowIdentifier,
+                    workflowName: matchedSkill.name
+                )
+            }
+        }
+
+        guard let activeSession = taskStateStore.activeLearnedWorkflowRun,
+              !activeSession.isTerminal,
+              let workflow = DexterWorkflowCatalog.workflow(forIdentifier: activeSession.workflowIdentifier) else {
+            if taskStateStore.activeLearnedWorkflowRun?.isTerminal == true {
+                taskStateStore.activeLearnedWorkflowRun = nil
+            }
+            return nil
+        }
+
+        let workflowOutcome = await DexterWorkflowRuntimeEngine.processTurn(
+            userMessage: userTranscript,
+            workflow: workflow,
+            session: activeSession,
+            context: context,
+            executeVerifiedAction: { proposedAction in
+                await executeVerifiedAction(
+                    proposedAction: proposedAction,
+                    context: context,
+                    hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
+                )
+            }
+        )
+
+        taskStateStore.activeLearnedWorkflowRun = workflowOutcome.session
+
+        if workflowOutcome.session.isTerminal {
+            taskStateStore.activeLearnedWorkflowRun = nil
+        }
+
+        guard workflowOutcome.didHandleTurn else {
+            return nil
+        }
+
+        await onTextChunk(workflowOutcome.spokenSummary)
+        return DexterOrchestratorModelResponse(
+            fullResponseText: workflowOutcome.spokenSummary,
+            context: context,
+            responseMode: .guide
+        )
     }
 
     private func handleWorkflowTaskIfNeeded(
@@ -488,10 +1061,29 @@ final class DexterOrchestrator {
             }
             DexterActionDiagnosticLog.plan("action=\(proposedAction.humanReadableDescription)")
 
+            let executionStateMachine = DexterExecutionStateMachine(
+                actionIdentifier: proposedAction.id,
+                parentTaskIdentifier: taskStateStore.activeWorkflowTask?.id
+            )
+            executionStateMachineRegistry.register(executionStateMachine)
+            do {
+                try executionStateMachine.transition(
+                    to: .understanding,
+                    progressSummary: "Classified as a computer action request."
+                )
+                try executionStateMachine.transition(
+                    to: .planning,
+                    progressSummary: proposedAction.humanReadableDescription
+                )
+            } catch {
+                DexterActionDiagnosticLog.action("execution state machine planning transition failed")
+            }
+
             let outcome = await executeVerifiedAction(
                 proposedAction: proposedAction,
                 context: context,
-                hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
+                hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
+                executionStateMachine: executionStateMachine
             )
             DexterActionDiagnosticLog.action("completed state=\(outcome.action.state.rawValue)")
             await onTextChunk(outcome.spokenSummary)
@@ -511,7 +1103,19 @@ enum DexterOrchestratorFactory {
         demonstrationPhaseStore: DexterDemonstrationPhaseStore? = nil,
         demonstrationSessionStore: DexterDemonstrationSessionStore? = nil
     ) -> DexterOrchestrator {
-        let modelProvider = OllamaModelProviderAdapter(aiProvider: ollamaProvider)
+        let ollamaModelProvider = OllamaModelProviderAdapter(aiProvider: ollamaProvider)
+        let claudeModelProvider: ClaudeModelProvider? = {
+            guard DexterWorkerProxyClient.isWorkerBaseURLConfigured else { return nil }
+            let proxyURL = "\(DexterWorkerProxyClient.workerBaseURL)/chat"
+            return ClaudeModelProvider(claudeAPI: ClaudeAPI(proxyURL: proxyURL))
+        }()
+        let openAIModelProvider = OpenAIModelProvider()
+        let modelProvider = DexterModelGateway(
+            ollamaProvider: ollamaModelProvider,
+            ollamaConnectionProvider: ollamaProvider,
+            claudeProvider: claudeModelProvider,
+            openAIProvider: openAIModelProvider
+        )
         let memoryStore = DefaultMemoryStore(maxSessionExchanges: 10)
         let taskStateStore = DexterWorkflowTaskStateStore(memoryStore: memoryStore)
         let permissionManager = DexterPermissionManager()

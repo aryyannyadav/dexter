@@ -15,21 +15,30 @@ struct DexterActionConfirmationContent: Equatable {
     let whatWillHappen: String
     let whyDexterWantsToDoIt: String
     let whereItWillHappen: String
+    let recoveryWarning: String?
 }
 
 enum DexterActionConfirmationPolicy {
     static func requiresUserConfirmation(
         action: DexterAction,
         settings: DexterActionPermissionSettings,
-        confirmationGrant: DexterActionConfirmationGrant?
+        confirmationGrant: DexterActionConfirmationGrant?,
+        observationBefore: DexterActionObservationSnapshot? = nil
     ) -> Bool {
         let resolvedRiskLevel = DexterActionRiskClassifier.resolvedRiskLevel(for: action)
+        let recoveryProfile = observationBefore.map {
+            DexterActionRecoveryMetadataBuilder.recoveryProfile(for: action, observationBefore: $0)
+        }
+        let isIrreversibleAction = recoveryProfile?.reversible == false
 
         switch resolvedRiskLevel {
         case .readOnly:
             return false
 
         case .lowRisk:
+            if isIrreversibleAction {
+                return !hasValidGrant(for: action, grant: confirmationGrant, resolvedRiskLevel: resolvedRiskLevel)
+            }
             if settings.autoApproveLowRiskActions {
                 return false
             }
@@ -44,12 +53,16 @@ enum DexterActionConfirmationPolicy {
     }
 
     static func spokenSummaryWhenAwaitingConfirmation(_ content: DexterActionConfirmationContent) -> String {
-        """
+        var message = """
         Dexter needs your approval in the menu bar panel before it can continue. \
         What will happen: \(content.whatWillHappen) \
         Why: \(content.whyDexterWantsToDoIt) \
         Where: \(content.whereItWillHappen)
         """
+        if let recoveryWarning = content.recoveryWarning?.nonEmptyTrimmedValue {
+            message += " Recovery: \(recoveryWarning)"
+        }
+        return message
     }
 
     private static func hasValidGrant(
@@ -77,10 +90,18 @@ enum DexterActionConfirmationContentBuilder {
             whyDexterWantsToDoIt = "You asked Dexter to handle this while you said: \"\(userRequest)\"."
         }
 
+        let observationBefore = DexterActionObservationSnapshot.from(context: context)
+        let recoveryProfile = DexterActionRecoveryMetadataBuilder.recoveryProfile(
+            for: action,
+            observationBefore: observationBefore
+        )
+        let recoveryWarning = DexterActionRecoveryCopy.irreversibilityWarning(for: recoveryProfile)
+
         return DexterActionConfirmationContent(
             whatWillHappen: action.humanReadableDescription,
             whyDexterWantsToDoIt: whyDexterWantsToDoIt,
-            whereItWillHappen: "On this Mac, in \(activeApplicationName), window \"\(activeWindowTitle)\"."
+            whereItWillHappen: "On this Mac, in \(activeApplicationName), window \"\(activeWindowTitle)\".",
+            recoveryWarning: recoveryWarning
         )
     }
 }
@@ -126,6 +147,8 @@ enum DexterActionRiskClassifier {
             return .moderateRisk
         case .quitApplication, .click, .keyboardShortcut, .runTask:
             return .highRisk
+        case .fileOperation, .terminalOperation:
+            return .moderateRisk
         }
     }
 }

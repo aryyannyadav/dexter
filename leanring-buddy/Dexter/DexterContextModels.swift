@@ -19,7 +19,37 @@ struct DexterUserMessageContext: Equatable {
 }
 
 struct DexterPointerContext: Equatable {
+    let screenDisplayIdentifier: UInt32?
     let locationInScreenSpace: CGPoint
+    let capturedAt: Date
+    let activeApplication: DexterActiveApplicationContext?
+    let activeWindow: DexterActiveWindowContext?
+    let semanticTarget: DexterPointerSemanticTarget?
+    let confidence: Double
+    let attentionRegionInScreenSpace: CGRect?
+
+    var x: CGFloat { locationInScreenSpace.x }
+    var y: CGFloat { locationInScreenSpace.y }
+
+    init(
+        screenDisplayIdentifier: UInt32? = nil,
+        locationInScreenSpace: CGPoint,
+        capturedAt: Date = Date(),
+        activeApplication: DexterActiveApplicationContext? = nil,
+        activeWindow: DexterActiveWindowContext? = nil,
+        semanticTarget: DexterPointerSemanticTarget? = nil,
+        confidence: Double = 0,
+        attentionRegionInScreenSpace: CGRect? = nil
+    ) {
+        self.screenDisplayIdentifier = screenDisplayIdentifier
+        self.locationInScreenSpace = locationInScreenSpace
+        self.capturedAt = capturedAt
+        self.activeApplication = activeApplication
+        self.activeWindow = activeWindow
+        self.semanticTarget = semanticTarget
+        self.confidence = confidence
+        self.attentionRegionInScreenSpace = attentionRegionInScreenSpace
+    }
 }
 
 struct DexterDisplayContext: Equatable {
@@ -62,6 +92,18 @@ struct DexterScreenContext: Equatable {
 
 struct DexterConversationContext: Equatable {
     let recentExchanges: [DexterConversationExchange]
+    let earlierSessionSummary: String?
+    let apiHistoryExchanges: [DexterConversationExchange]
+
+    init(
+        recentExchanges: [DexterConversationExchange],
+        earlierSessionSummary: String? = nil,
+        apiHistoryExchanges: [DexterConversationExchange]? = nil
+    ) {
+        self.recentExchanges = recentExchanges
+        self.earlierSessionSummary = earlierSessionSummary
+        self.apiHistoryExchanges = apiHistoryExchanges ?? recentExchanges
+    }
 }
 
 struct DexterRecordedAction: Equatable {
@@ -77,25 +119,39 @@ struct DexterActionHistoryContext: Equatable {
 struct DexterTaskContext: Equatable {
     let currentTaskDescription: String?
     let activeWorkflowTask: DexterTask?
+    let accountabilitySnapshot: DexterAccountabilityTaskSnapshot
 
-    init(currentTaskDescription: String?, activeWorkflowTask: DexterTask? = nil) {
+    init(
+        currentTaskDescription: String?,
+        activeWorkflowTask: DexterTask? = nil,
+        accountabilitySnapshot: DexterAccountabilityTaskSnapshot = .empty
+    ) {
         self.currentTaskDescription = currentTaskDescription
         self.activeWorkflowTask = activeWorkflowTask
+        self.accountabilitySnapshot = accountabilitySnapshot
     }
 }
 
 struct DexterPersistentMemoryContext: Equatable {
-    let userPreferences: [DexterMemoryEntry]
-    let rememberedFacts: [DexterMemoryEntry]
+    let retrievedMemories: [DexterStructuredMemoryRecord]
     let workflowContext: DexterWorkflowContextState?
 
+    var userPreferences: [DexterMemoryEntry] {
+        retrievedMemories.filter { $0.type == .preference }.map { $0.legacyMemoryEntry() }
+    }
+
+    var rememberedFacts: [DexterMemoryEntry] {
+        retrievedMemories
+            .filter { $0.type == .semantic || $0.type == .episodic || $0.type == .commitment }
+            .map { $0.legacyMemoryEntry() }
+    }
+
     static let empty = DexterPersistentMemoryContext(
-        userPreferences: [],
-        rememberedFacts: [],
+        retrievedMemories: [],
         workflowContext: nil
     )
 
     var hasAnyPersistentMemory: Bool {
-        !userPreferences.isEmpty || !rememberedFacts.isEmpty || workflowContext != nil
+        !retrievedMemories.isEmpty || workflowContext != nil
     }
 }

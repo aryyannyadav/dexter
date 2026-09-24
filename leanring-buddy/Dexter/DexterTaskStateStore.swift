@@ -8,11 +8,20 @@ import Foundation
 protocol DexterTaskStateStore: AnyObject {
     var currentTaskDescription: String? { get set }
     var activeWorkflowTask: DexterTask? { get set }
+    var activeLearnedWorkflowRun: DexterWorkflowRunSession? { get set }
+}
+
+extension DexterTaskStateStore {
+    var activeLearnedWorkflowRun: DexterWorkflowRunSession? {
+        get { nil }
+        set { _ = newValue }
+    }
 }
 
 final class InMemoryDexterTaskStateStore: DexterTaskStateStore {
     var currentTaskDescription: String?
     var activeWorkflowTask: DexterTask?
+    var activeLearnedWorkflowRun: DexterWorkflowRunSession?
 }
 
 /// Keeps the lightweight memory-store task description in sync with the active workflow title.
@@ -52,4 +61,23 @@ final class DexterWorkflowTaskStateStore: DexterTaskStateStore {
     }
 
     private var storedActiveWorkflowTask: DexterTask?
+
+    var activeLearnedWorkflowRun: DexterWorkflowRunSession? {
+        get { storedActiveLearnedWorkflowRun }
+        set {
+            storedActiveLearnedWorkflowRun = newValue
+            if let newValue, !newValue.isTerminal {
+                memoryStore.setWorkflowContext(
+                    DexterWorkflowContextState(
+                        summary: "\(newValue.workflowName) — \(newValue.progressLabel), phase \(newValue.runtimePhase.rawValue)"
+                    ),
+                    provenance: .workflowRequired
+                )
+            } else if storedActiveWorkflowTask == nil {
+                memoryStore.clearWorkflowContext()
+            }
+        }
+    }
+
+    private var storedActiveLearnedWorkflowRun: DexterWorkflowRunSession?
 }

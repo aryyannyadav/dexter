@@ -38,16 +38,38 @@ enum DexterActionPlanner {
             return .action(DexterActionFactory.typeText(fixText))
         }
 
+        let browserPlan = DexterBrowserIntelligencePlanner.planAction(
+            normalizedUserMessage: normalizedMessage,
+            context: context
+        )
+        switch browserPlan {
+        case .action(let browserAction):
+            return .action(browserAction)
+        case .unsupported(let message):
+            return .unsupported(message: message)
+        case .notAnAction:
+            break
+        }
+
         if DexterPointerControlWorkflow.matchesPointerActIntent(normalizedUserMessage: normalizedMessage) {
             guard let pointerLocation = DexterPointerControlWorkflow.validatedPointerLocationInScreenSpace(for: context) else {
                 return .unsupported(message: DexterPointerControlWorkflow.pointFirstMessage)
             }
             let controlLabel = DexterPointerControlWorkflow.controlLabelForConfirmation(from: context)
+            if DexterBrowserStateCollector.isBrowserApplicationName(context.activeApplication.localizedName) {
+                return .action(
+                    DexterActionFactory.browserClick(
+                        x: String(format: "%.0f", pointerLocation.x),
+                        y: String(format: "%.0f", pointerLocation.y),
+                        label: controlLabel
+                    )
+                )
+            }
             return .action(DexterActionFactory.clickAtScreenLocation(pointerLocation, label: controlLabel))
         }
 
         return .unsupported(
-            message: "Dexter can open, focus, or quit applications through OpenClaw, explain what you're pointing at, apply a taught code fix, or click the control under your pointer."
+            message: "Dexter can open, focus, or quit applications, run browser actions through OpenClaw, explain what you're pointing at, apply a taught code fix, or click the control under your pointer."
         )
     }
 

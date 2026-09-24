@@ -23,6 +23,10 @@ enum DexterUserFacingErrorMessage {
             return sttTimeout.errorDescription ?? "Dexter timed out waiting for speech transcription."
         }
 
+        if let gatewayError = error as? DexterModelGatewayError {
+            return gatewayError.errorDescription ?? "Dexter couldn't reach any configured model backend."
+        }
+
         if let ollamaError = error as? OllamaProviderError {
             return ollamaError.errorDescription ?? "Dexter couldn't reach Ollama."
         }

@@ -15,6 +15,7 @@ struct DexterContextRelevancePlan: Equatable {
     var includeRecentConversationInAPIHistory: Bool
     var includeCurrentTask: Bool
     var includePersistentMemory: Bool
+    var includePersonalContextGraph: Bool
 }
 
 enum DexterContextRelevancePlanner {
@@ -43,13 +44,14 @@ enum DexterContextRelevancePlanner {
         return DexterContextRelevancePlan(
             includeActiveApplication: true,
             includeActiveWindow: true,
-            includePointerContext: hasScreenCaptures,
+            includePointerContext: true,
             includeScreenContext: hasScreenCaptures,
             includeSelectedText: hasSelectedText,
             includeRecentConversationInPrompt: false,
             includeRecentConversationInAPIHistory: true,
             includeCurrentTask: false,
-            includePersistentMemory: context.persistentMemory.hasAnyPersistentMemory
+            includePersistentMemory: context.persistentMemory.hasAnyPersistentMemory,
+            includePersonalContextGraph: !(context.personalContextGraph?.entities.isEmpty ?? true)
         )
     }
 
@@ -75,6 +77,8 @@ enum DexterContextRelevancePlanner {
             return !taskDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }()
         let hasPersistentMemory = context.persistentMemory.hasAnyPersistentMemory
+        let includePersonalContextGraph = DexterPersonalContextIntentRecognizer.isPersonalContextQuery(userMessage)
+            || !(context.personalContextGraph?.entities.isEmpty ?? true)
 
         if isConversationRecall && !isVisualDeictic && !isErrorDebugging {
             return DexterContextRelevancePlan(
@@ -86,7 +90,8 @@ enum DexterContextRelevancePlanner {
                 includeRecentConversationInPrompt: true,
                 includeRecentConversationInAPIHistory: true,
                 includeCurrentTask: false,
-                includePersistentMemory: hasPersistentMemory
+                includePersistentMemory: hasPersistentMemory,
+                includePersonalContextGraph: includePersonalContextGraph
             )
         }
 
@@ -100,7 +105,8 @@ enum DexterContextRelevancePlanner {
                 includeRecentConversationInPrompt: false,
                 includeRecentConversationInAPIHistory: true,
                 includeCurrentTask: hasCurrentTask,
-                includePersistentMemory: hasPersistentMemory
+                includePersistentMemory: hasPersistentMemory,
+                includePersonalContextGraph: includePersonalContextGraph
             )
         }
 
@@ -108,13 +114,14 @@ enum DexterContextRelevancePlanner {
             return DexterContextRelevancePlan(
                 includeActiveApplication: false,
                 includeActiveWindow: true,
-                includePointerContext: hasScreenCaptures,
+                includePointerContext: true,
                 includeScreenContext: hasScreenCaptures,
                 includeSelectedText: hasSelectedText,
                 includeRecentConversationInPrompt: false,
                 includeRecentConversationInAPIHistory: false,
                 includeCurrentTask: false,
-                includePersistentMemory: hasPersistentMemory
+                includePersistentMemory: hasPersistentMemory,
+                includePersonalContextGraph: includePersonalContextGraph
             )
         }
 
@@ -127,7 +134,8 @@ enum DexterContextRelevancePlanner {
             includeRecentConversationInPrompt: false,
             includeRecentConversationInAPIHistory: true,
             includeCurrentTask: hasCurrentTask,
-            includePersistentMemory: hasPersistentMemory
+            includePersistentMemory: hasPersistentMemory,
+            includePersonalContextGraph: includePersonalContextGraph
         )
     }
 
@@ -165,13 +173,27 @@ enum DexterContextRelevancePlanner {
         matchesWhatIsThis(normalizedMessage)
     }
 
+    static func matchesConversationRecallPublic(_ normalizedMessage: String) -> Bool {
+        matchesConversationRecall(normalizedMessage)
+    }
+
+    static func matchesErrorDebuggingPublic(_ normalizedMessage: String) -> Bool {
+        matchesErrorDebugging(normalizedMessage)
+    }
+
     private static func matchesWhatIsThis(_ normalizedMessage: String) -> Bool {
         let phrases = [
             "what is this",
             "what's this",
             "what is that",
             "what's that",
-            "what am i looking at"
+            "what am i looking at",
+            "what's this button",
+            "what is this button",
+            "what's that button",
+            "how do i use this",
+            "how do i use that",
+            "do this"
         ]
         return phrases.contains { normalizedMessage.contains($0) }
     }

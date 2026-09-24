@@ -8,13 +8,21 @@ import Foundation
 /// Bridges Dexter orchestration (`ModelProvider`) to the local `AIProvider` (Ollama).
 final class OllamaModelProviderAdapter: ModelProvider {
     private let aiProvider: OllamaProvider
+    private let visionProvider: VisionProvider
 
     var modelIdentifier: String {
         aiProvider.configuredModelName
     }
 
-    init(aiProvider: OllamaProvider) {
+    init(
+        aiProvider: OllamaProvider,
+        visionProvider: VisionProvider? = nil
+    ) {
         self.aiProvider = aiProvider
+        self.visionProvider = visionProvider ?? FallbackVisionProvider(
+            primaryProvider: OllamaVisionProvider(ollamaProvider: aiProvider),
+            fallbackProvider: CloudVisionProvider()
+        )
     }
 
     func setModelIdentifier(_ modelIdentifier: String) {
@@ -33,6 +41,22 @@ final class OllamaModelProviderAdapter: ModelProvider {
     ) async throws -> DexterModelGenerationResult {
         let startDate = Date()
 
+        if let visionRequest = request.visionRequest {
+            DexterDiagnosticLog.vision(
+                "VisionProvider analyze scope=\(visionRequest.scope.rawValue) provider=\(visionProvider.providerName)"
+            )
+            let visionResponse = try await visionProvider.analyze(
+                request: visionRequest,
+                onTextChunk: onTextChunk
+            )
+            let duration = Date().timeIntervalSince(startDate)
+            return DexterModelGenerationResult(
+                fullResponseText: visionResponse.conversationalAnswer,
+                duration: duration,
+                visionResponse: visionResponse
+            )
+        }
+
         let chatMessages = OllamaModelRequestTranslator.chatMessages(for: request)
         let visionImageBase64Payloads = OllamaModelRequestTranslator.encodeImagesForOllama(from: request.images)
 
@@ -41,7 +65,7 @@ final class OllamaModelProviderAdapter: ModelProvider {
         }
 
         if !visionImageBase64Payloads.isEmpty {
-            DexterDiagnosticLog.vision("sending minimal multimodal Ollama request (\(visionImageBase64Payloads.count) image(s))")
+            DexterDiagnosticLog.vision("legacy multimodal Ollama path (\(visionImageBase64Payloads.count) image(s))")
             DexterTurnTrace.log("image encoded (\(visionImageBase64Payloads.first?.count ?? 0) base64 chars)")
         }
 

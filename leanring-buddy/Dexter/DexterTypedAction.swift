@@ -20,6 +20,8 @@ enum DexterActionType: String, Equatable, CaseIterable {
     case navigate = "Navigate"
     case select = "Select"
     case runTask = "RunTask"
+    case fileOperation = "FileOperation"
+    case terminalOperation = "TerminalOperation"
 }
 
 enum DexterActionRiskLevel: String, Equatable {
@@ -222,6 +224,101 @@ enum DexterActionFactory {
         )
     }
 
+    static func browserOpen(url: String, verificationHint: String) -> DexterAction {
+        DexterAction(
+            type: .openURL,
+            parameters: [
+                "url": url,
+                "browserAction": "open",
+                "verificationHint": verificationHint
+            ],
+            riskLevel: .lowRisk,
+            humanReadableDescription: "Open \(verificationHint) in the browser."
+        )
+    }
+
+    static func browserSearch(query: String) -> DexterAction {
+        DexterAction(
+            type: .navigate,
+            parameters: [
+                "query": query,
+                "browserAction": "search",
+                "verificationHint": query
+            ],
+            riskLevel: .lowRisk,
+            humanReadableDescription: "Search the browser for \(query)."
+        )
+    }
+
+    static func browserNavigate(url: String) -> DexterAction {
+        DexterAction(
+            type: .navigate,
+            parameters: [
+                "url": url,
+                "destination": url,
+                "browserAction": "navigate",
+                "verificationHint": URL(string: url)?.host ?? url
+            ],
+            riskLevel: .lowRisk,
+            humanReadableDescription: "Navigate the browser to \(url)."
+        )
+    }
+
+    static func browserReadPage() -> DexterAction {
+        DexterAction(
+            type: .navigate,
+            parameters: ["browserAction": "read"],
+            riskLevel: .readOnly,
+            humanReadableDescription: "Read the current browser page."
+        )
+    }
+
+    static func browserBack() -> DexterAction {
+        DexterAction(
+            type: .navigate,
+            parameters: ["browserAction": "back"],
+            riskLevel: .lowRisk,
+            humanReadableDescription: "Go back in the browser."
+        )
+    }
+
+    static func browserForward() -> DexterAction {
+        DexterAction(
+            type: .navigate,
+            parameters: ["browserAction": "forward"],
+            riskLevel: .lowRisk,
+            humanReadableDescription: "Go forward in the browser."
+        )
+    }
+
+    static func browserClick(x: String, y: String, label: String) -> DexterAction {
+        DexterAction(
+            type: .click,
+            parameters: [
+                "x": x,
+                "y": y,
+                "label": label,
+                "browserAction": "click",
+                "verificationHint": label
+            ],
+            riskLevel: .highRisk,
+            humanReadableDescription: "Click \(label) in the browser."
+        )
+    }
+
+    static func browserType(text: String) -> DexterAction {
+        DexterAction(
+            type: .typeText,
+            parameters: [
+                "text": text,
+                "browserAction": "type",
+                "verificationHint": text
+            ],
+            riskLevel: .moderateRisk,
+            humanReadableDescription: "Type into the browser field."
+        )
+    }
+
     static func select(targetDescription: String) -> DexterAction {
         DexterAction(
             type: .select,
@@ -237,6 +334,60 @@ enum DexterActionFactory {
             parameters: ["instruction": instruction],
             riskLevel: .highRisk,
             humanReadableDescription: "Run agent task: \(instruction)."
+        )
+    }
+
+    static func fileOperation(
+        fileAction: String,
+        path: String? = nil,
+        destinationPath: String? = nil,
+        newName: String? = nil,
+        content: String? = nil,
+        query: String? = nil,
+        searchRoot: String? = nil,
+        verificationContent: String? = nil,
+        riskLevel: DexterActionRiskLevel,
+        humanReadableDescription: String
+    ) -> DexterAction {
+        var parameters: [String: String] = ["fileAction": fileAction]
+        if let path { parameters["path"] = path }
+        if let destinationPath { parameters["destinationPath"] = destinationPath }
+        if let newName { parameters["newName"] = newName }
+        if let content {
+            parameters["content"] = content
+            parameters["verificationContent"] = verificationContent ?? content
+        }
+        if let query { parameters["query"] = query }
+        if let searchRoot { parameters["searchRoot"] = searchRoot }
+        return DexterAction(
+            type: .fileOperation,
+            parameters: parameters,
+            riskLevel: riskLevel,
+            humanReadableDescription: humanReadableDescription
+        )
+    }
+
+    static func terminalOperation(
+        terminalAction: String,
+        commandTemplate: String,
+        pathArgument: String? = nil,
+        workingDirectory: String? = nil,
+        expectedOutputContains: String? = nil,
+        riskLevel: DexterActionRiskLevel,
+        humanReadableDescription: String
+    ) -> DexterAction {
+        var parameters: [String: String] = [
+            "terminalAction": terminalAction,
+            "commandTemplate": commandTemplate
+        ]
+        if let pathArgument { parameters["pathArgument"] = pathArgument }
+        if let workingDirectory { parameters["workingDirectory"] = workingDirectory }
+        if let expectedOutputContains { parameters["expectedOutputContains"] = expectedOutputContains }
+        return DexterAction(
+            type: .terminalOperation,
+            parameters: parameters,
+            riskLevel: riskLevel,
+            humanReadableDescription: humanReadableDescription
         )
     }
 }

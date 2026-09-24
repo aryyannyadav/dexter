@@ -9,8 +9,18 @@ import Foundation
 class OpenAIAPI {
     private let apiKey: String
     private let apiURL: URL
-    private let model: String
+    private var model: String
     private let session: URLSession
+
+    var configuredModelName: String { model }
+
+    func setModelName(_ updatedModelName: String) {
+        model = updatedModelName
+    }
+
+    func warmUpConnectionIfNeeded() {
+        warmUpTLSConnection()
+    }
 
     init(apiKey: String, model: String = "gpt-5.2-2025-12-11") {
         self.apiKey = apiKey
@@ -44,6 +54,61 @@ class OpenAIAPI {
         session.dataTask(with: warmupRequest) { _, _, _ in
             // Response doesn't matter — the TLS handshake is the goal
         }.resume()
+    }
+
+    /// Text-only chat completion (single response; Dexter gateway emits one streamed chunk).
+    func generateTextCompletion(
+        systemPrompt: String,
+        conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
+        userPrompt: String
+    ) async throws -> (text: String, duration: TimeInterval) {
+        let startTime = Date()
+
+        var request = URLRequest(url: apiURL)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var messages: [[String: Any]] = []
+        messages.append(["role": "system", "content": systemPrompt])
+        for (userPlaceholder, assistantResponse) in conversationHistory {
+            messages.append(["role": "user", "content": userPlaceholder])
+            messages.append(["role": "assistant", "content": assistantResponse])
+        }
+        messages.append(["role": "user", "content": userPrompt])
+
+        let body: [String: Any] = [
+            "model": model,
+            "max_completion_tokens": 600,
+            "messages": messages
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            let responseString = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw NSError(
+                domain: "OpenAIAPI",
+                code: (response as? HTTPURLResponse)?.statusCode ?? -1,
+                userInfo: [NSLocalizedDescriptionKey: "API Error: \(responseString)"]
+            )
+        }
+
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let choices = json?["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let message = firstChoice["message"] as? [String: Any],
+              let text = message["content"] as? String else {
+            throw NSError(
+                domain: "OpenAIAPI",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid response format"]
+            )
+        }
+
+        return (text: text, duration: Date().timeIntervalSince(startTime))
     }
 
     /// Send a vision request to OpenAI with one or more labeled images.

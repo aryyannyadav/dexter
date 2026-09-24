@@ -5,43 +5,41 @@
 
 import Foundation
 
-/// Dexter actions that can be executed through OpenClaw when the local node is connected.
+/// Dexter actions that can be executed through OpenClaw when the local node exposes the required capability.
 enum OpenClawRuntimeAllowlist {
     static func isDexterSupportedAction(_ actionRequest: AgentActionRequest) -> Bool {
-        switch actionRequest.actionIdentifier {
-        case DexterActionType.openApplication.rawValue,
-             DexterActionType.focusApplication.rawValue,
-             DexterActionType.quitApplication.rawValue:
-            let applicationName = actionRequest.parameters["applicationName"] ?? ""
-            return !applicationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case DexterActionType.click.rawValue:
-            let xCoordinate = actionRequest.parameters["x"] ?? ""
-            let yCoordinate = actionRequest.parameters["y"] ?? ""
-            return Double(xCoordinate) != nil && Double(yCoordinate) != nil
-        default:
-            return false
-        }
+        DexterTool.isOpenClawToolingSupported(actionRequest)
     }
 
     static func canExecuteOnConnectedNode(
         _ actionRequest: AgentActionRequest,
         nodeSnapshot: OpenClawNodeCapabilitySnapshot
     ) -> Bool {
-        guard nodeSnapshot.isConnected, nodeSnapshot.hasComputerActCommand else {
+        guard let toolInvocation = DexterTool.invocation(from: actionRequest) else {
             return false
         }
-        return isDexterSupportedAction(actionRequest)
+        guard nodeSnapshot.isConnected else { return false }
+
+        let discoveryReport = DexterOpenClawCapabilityDiscovery.report(
+            gatewayConnected: true,
+            nodeSnapshot: nodeSnapshot
+        )
+        guard let capability = toolInvocation.toolKind.requiredOpenClawCapability else {
+            return false
+        }
+        return discoveryReport.isCapabilityAvailable(capability)
     }
 
-    /// Open-application intents should route through OpenClaw before MacDexter when the node can execute them.
+    /// Lifecycle and pointer actions should route through OpenClaw before MacDexter when the node can execute them.
     static func prefersOpenClawRuntime(_ actionRequest: AgentActionRequest) -> Bool {
-        switch actionRequest.actionIdentifier {
-        case DexterActionType.openApplication.rawValue,
-             DexterActionType.focusApplication.rawValue,
-             DexterActionType.quitApplication.rawValue,
-             DexterActionType.click.rawValue:
+        guard let toolKind = DexterTool.toolKind(for: actionRequest) else {
+            return false
+        }
+        switch toolKind {
+        case .launchApplication, .quitApplication, .focusApplication, .click, .typeText, .keyPress, .scroll,
+             .browserInteraction, .screenSnapshot, .screenObservation, .systemRun:
             return true
-        default:
+        case .fileOperation, .terminalOperation:
             return false
         }
     }

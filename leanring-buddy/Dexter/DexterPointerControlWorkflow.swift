@@ -45,10 +45,6 @@ enum DexterPointerControlWorkflow {
     }
 
     static func validatedPointerLocationInScreenSpace(for context: DexterContext) -> CGPoint? {
-        guard context.screen.captureAvailability == .available,
-              !context.screen.allScreens.isEmpty else {
-            return nil
-        }
         let pointerLocation = context.attention.pointerLocationInScreenSpace
         guard pointerLocation.x.isFinite, pointerLocation.y.isFinite else {
             return nil
@@ -57,6 +53,9 @@ enum DexterPointerControlWorkflow {
     }
 
     static func controlLabelForConfirmation(from context: DexterContext) -> String {
+        if let semanticTarget = context.pointer?.semanticTarget {
+            return semanticTarget.confirmationLabel
+        }
         let hint = context.attention.accessibilityHintAtPointer
         if let title = hint.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             return title

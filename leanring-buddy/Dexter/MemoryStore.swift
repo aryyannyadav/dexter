@@ -11,15 +11,13 @@ struct DexterConversationExchange: Equatable {
     let assistantResponse: String
 }
 
-/// Unified memory surface for Dexter. Implementations can later swap in cloud-backed storage.
+/// Unified memory surface for Dexter.
 protocol MemoryStore: AnyObject {
-    // Session conversation (bounded, in-memory for the running app session).
     func appendExchange(userTranscript: String, assistantResponse: String)
     func recentExchanges(limit: Int) -> [DexterConversationExchange]
     func clearSessionMemory()
     var sessionExchangeCount: Int { get }
 
-    // Explicit persistent memory (user-initiated or required workflow state).
     func rememberFact(_ content: String, title: String?, provenance: DexterMemoryProvenance)
     func saveUserPreference(title: String, content: String, provenance: DexterMemoryProvenance)
     func setActiveTask(description: String?, provenance: DexterMemoryProvenance)
@@ -29,10 +27,25 @@ protocol MemoryStore: AnyObject {
     var workflowContext: DexterWorkflowContextState? { get }
 
     func allPersistentEntries() -> [DexterMemoryEntry]
-    func persistentMemoryContext() -> DexterPersistentMemoryContext
+    func allStructuredMemories() -> [DexterStructuredMemoryRecord]
+    func persistentMemoryContext(forQuery query: String, limit: Int) -> DexterPersistentMemoryContext
     func removePersistentEntry(id: UUID)
     func clearPersistentMemory(kind: DexterMemoryEntryKind?)
     func clearWorkflowContext()
+
+    func saveInferredMemoryPendingConfirmation(content: String, type: DexterMemoryType)
+    func processMemoryIntents(fromUserMessage userMessage: String) -> DexterMemoryIntentOutcome
+    func observeUserMessageForInference(_ userMessage: String)
+    func consumeInferenceConfirmationPrompt() -> String?
+    func replaceStructuredMemories(_ memories: [DexterStructuredMemoryRecord])
+    func saveStructuredMemoryRecord(_ record: DexterStructuredMemoryRecord)
+
+    func accountabilityTaskSnapshot() -> DexterAccountabilityTaskSnapshot
+    func allAccountabilityTasks() -> [DexterAccountabilityTask]
+    func activeAccountabilityTask() -> DexterAccountabilityTask?
+    func upsertAccountabilityTask(_ task: DexterAccountabilityTask)
+    func setActiveAccountabilityTaskIdentifier(_ identifier: UUID?)
+    func removeAccountabilityTask(identifier: UUID)
 }
 
 /// In-memory session history with a bounded number of exchanges.
@@ -71,18 +84,29 @@ final class SessionMemoryStore {
     }
 }
 
-/// Default composition used by the app: session conversation + on-disk persistent memory.
+/// Default composition: session conversation + on-disk structured memory engine.
 final class DefaultMemoryStore: MemoryStore {
     private let sessionMemoryStore: SessionMemoryStore
-    private let persistentMemoryStore: PersistentMemoryStore
+    private var persistentMemoryStore: PersistentMemoryStore
+    private let accountabilityTaskStore: DexterAccountabilityTaskStore
+    private let inferenceTracker = DexterMemoryInferenceTracker()
 
-    init(maxSessionExchanges: Int = 10, persistentStorageURL: URL? = PersistentMemoryStore.defaultStorageURL()) {
+    init(
+        maxSessionExchanges: Int = 10,
+        persistentStorageURL: URL? = PersistentMemoryStore.defaultStorageURL(),
+        accountabilityTasksStorageURL: URL? = DexterAccountabilityTaskStore.defaultStorageURL()
+    ) {
         sessionMemoryStore = SessionMemoryStore(maxSessionExchanges: maxSessionExchanges)
         persistentMemoryStore = PersistentMemoryStore(storageURL: persistentStorageURL)
+        accountabilityTaskStore = DexterAccountabilityTaskStore(storageURL: accountabilityTasksStorageURL)
     }
 
     static func inMemoryForTesting(maxSessionExchanges: Int = 10) -> DefaultMemoryStore {
-        DefaultMemoryStore(maxSessionExchanges: maxSessionExchanges, persistentStorageURL: nil)
+        DefaultMemoryStore(
+            maxSessionExchanges: maxSessionExchanges,
+            persistentStorageURL: nil,
+            accountabilityTasksStorageURL: nil
+        )
     }
 
     var sessionExchangeCount: Int {
@@ -106,13 +130,13 @@ final class DefaultMemoryStore: MemoryStore {
         guard !trimmedContent.isEmpty else { return }
 
         let resolvedTitle = (title ?? Self.defaultTitle(forFact: trimmedContent)).trimmingCharacters(in: .whitespacesAndNewlines)
-        let entry = DexterMemoryEntry(
-            kind: .rememberedFact,
-            title: resolvedTitle.isEmpty ? "Remembered fact" : resolvedTitle,
+        let record = DexterStructuredMemoryRecord.explicitSemantic(
             content: trimmedContent,
-            provenance: provenance
+            title: resolvedTitle.isEmpty ? "Remembered fact" : resolvedTitle,
+            type: .semantic
         )
-        persistentMemoryStore.appendEntry(entry)
+        _ = saveStructuredRecord(record)
+        _ = provenance
     }
 
     func saveUserPreference(title: String, content: String, provenance: DexterMemoryProvenance) {
@@ -120,19 +144,28 @@ final class DefaultMemoryStore: MemoryStore {
         let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedContent.isEmpty else { return }
 
-        let entry = DexterMemoryEntry(
-            kind: .userPreference,
-            title: trimmedTitle.isEmpty ? "Preference" : trimmedTitle,
+        let record = DexterStructuredMemoryRecord.explicitPreference(
             content: trimmedContent,
-            provenance: provenance
+            title: trimmedTitle.isEmpty ? "Preference" : trimmedTitle
         )
-        persistentMemoryStore.appendEntry(entry)
+        _ = saveStructuredRecord(record)
+        _ = provenance
     }
 
     func setActiveTask(description: String?, provenance: DexterMemoryProvenance) {
         let trimmedDescription = description?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let trimmedDescription, !trimmedDescription.isEmpty {
             persistentMemoryStore.activeTaskDescription = trimmedDescription
+            let taskRecord = DexterStructuredMemoryRecord(
+                type: .task,
+                content: trimmedDescription,
+                source: .explicitUserUtterance,
+                confidence: 0.95,
+                importance: 0.9,
+                permissions: .defaultForExplicitUser,
+                title: "Current task"
+            )
+            _ = saveStructuredRecord(taskRecord)
         } else {
             persistentMemoryStore.clearActiveTask()
         }
@@ -150,6 +183,16 @@ final class DefaultMemoryStore: MemoryStore {
                 summary: trimmedSummary,
                 updatedAt: workflowContext.updatedAt
             )
+            let workflowRecord = DexterStructuredMemoryRecord(
+                type: .workflow,
+                content: trimmedSummary,
+                source: .workflowSystem,
+                confidence: 1.0,
+                importance: 0.85,
+                permissions: .defaultForExplicitUser,
+                title: "Workflow"
+            )
+            _ = saveStructuredRecord(workflowRecord)
         } else {
             persistentMemoryStore.clearWorkflowContext()
         }
@@ -164,28 +207,128 @@ final class DefaultMemoryStore: MemoryStore {
         persistentMemoryStore.workflowContext
     }
 
-    func allPersistentEntries() -> [DexterMemoryEntry] {
-        persistentMemoryStore.allEntries()
+    func allStructuredMemories() -> [DexterStructuredMemoryRecord] {
+        persistentMemoryStore.allMemories()
     }
 
-    func persistentMemoryContext() -> DexterPersistentMemoryContext {
-        DexterPersistentMemoryContext(
-            userPreferences: persistentMemoryStore.entries(kind: .userPreference),
-            rememberedFacts: persistentMemoryStore.entries(kind: .rememberedFact),
+    func allPersistentEntries() -> [DexterMemoryEntry] {
+        persistentMemoryStore.activeMemories().map { $0.legacyMemoryEntry() }
+    }
+
+    func persistentMemoryContext(forQuery query: String, limit: Int = 6) -> DexterPersistentMemoryContext {
+        let retrieved = DexterMemoryRetrievalEngine.retrieve(
+            query: query,
+            from: persistentMemoryStore.allMemories(),
+            limit: limit
+        )
+        return DexterPersistentMemoryContext(
+            retrievedMemories: retrieved,
             workflowContext: persistentMemoryStore.workflowContext
         )
     }
 
     func removePersistentEntry(id: UUID) {
-        persistentMemoryStore.removeEntry(id: id)
+        persistentMemoryStore.removeMemory(id: id)
     }
 
     func clearPersistentMemory(kind: DexterMemoryEntryKind?) {
-        persistentMemoryStore.clearEntries(kind: kind)
+        if let kind {
+            switch kind {
+            case .userPreference:
+                persistentMemoryStore.clearMemories(type: .preference)
+            case .rememberedFact:
+                persistentMemoryStore.clearMemories(type: .semantic)
+            }
+        } else {
+            persistentMemoryStore.clearMemories(type: nil)
+        }
     }
 
     func clearWorkflowContext() {
         persistentMemoryStore.clearWorkflowContext()
+    }
+
+    func saveInferredMemoryPendingConfirmation(content: String, type: DexterMemoryType) {
+        let record = DexterStructuredMemoryRecord(
+            type: type,
+            content: content,
+            source: .inferredObservation,
+            confidence: 0.55,
+            importance: 0.5,
+            permissions: .inferredUntilConfirmed,
+            title: "Observed pattern"
+        )
+        _ = saveStructuredRecord(record)
+    }
+
+    func processMemoryIntents(fromUserMessage userMessage: String) -> DexterMemoryIntentOutcome {
+        let accountabilityOutcome = DexterAccountabilityIntentProcessor.process(
+            fromUserMessage: userMessage,
+            memoryStore: self
+        )
+        switch accountabilityOutcome {
+        case .userFacingResponse, .inferenceConfirmationPrompt:
+            return accountabilityOutcome
+        case .appliedSilently, .noMemoryIntent:
+            return DexterMemoryIntentProcessor.process(fromUserMessage: userMessage, memoryStore: self)
+        }
+    }
+
+    func saveStructuredMemoryRecord(_ record: DexterStructuredMemoryRecord) {
+        _ = saveStructuredRecord(record)
+    }
+
+    func accountabilityTaskSnapshot() -> DexterAccountabilityTaskSnapshot {
+        accountabilityTaskStore.makeSnapshot()
+    }
+
+    func allAccountabilityTasks() -> [DexterAccountabilityTask] {
+        accountabilityTaskStore.allTasks()
+    }
+
+    func activeAccountabilityTask() -> DexterAccountabilityTask? {
+        accountabilityTaskStore.activeTask()
+    }
+
+    func upsertAccountabilityTask(_ task: DexterAccountabilityTask) {
+        accountabilityTaskStore.upsertTask(task)
+    }
+
+    func setActiveAccountabilityTaskIdentifier(_ identifier: UUID?) {
+        accountabilityTaskStore.setActiveTaskIdentifier(identifier)
+    }
+
+    func removeAccountabilityTask(identifier: UUID) {
+        accountabilityTaskStore.removeTask(identifier: identifier)
+    }
+
+    func observeUserMessageForInference(_ userMessage: String) {
+        inferenceTracker.observeUserMessage(userMessage)
+    }
+
+    func consumeInferenceConfirmationPrompt() -> String? {
+        guard let suggestion = inferenceTracker.consumePendingSuggestion() else {
+            return nil
+        }
+        return "I noticed you usually do “\(suggestion.suggestedContent)”. Should I remember that?"
+    }
+
+    func replaceStructuredMemories(_ memories: [DexterStructuredMemoryRecord]) {
+        persistentMemoryStore.mutateMemories { storedMemories in
+            storedMemories = memories
+        }
+    }
+
+    @discardableResult
+    private func saveStructuredRecord(_ record: DexterStructuredMemoryRecord) -> Result<DexterStructuredMemoryRecord, DexterMemoryError> {
+        var memories = persistentMemoryStore.allMemories()
+        let result = DexterMemoryEngine.saveExplicit(record: record, in: &memories)
+        if case .success = result {
+            persistentMemoryStore.mutateMemories { storedMemories in
+                storedMemories = memories
+            }
+        }
+        return result
     }
 
     private static func defaultTitle(forFact content: String) -> String {

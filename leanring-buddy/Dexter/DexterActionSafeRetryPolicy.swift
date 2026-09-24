@@ -15,7 +15,7 @@ enum DexterActionSafeRetryPolicy {
         switch action.type {
         case .openApplication, .focusApplication, .openURL, .scroll, .navigate:
             return true
-        case .inspectScreen, .explainContent, .click, .typeText, .keyboardShortcut, .select, .runTask:
+        case .inspectScreen, .explainContent, .click, .typeText, .keyboardShortcut, .select, .runTask, .quitApplication:
             return false
         }
     }

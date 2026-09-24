@@ -62,6 +62,8 @@ struct DexterContext: Equatable {
     var recentActions: DexterActionHistoryContext
     var currentTask: DexterTaskContext
     var persistentMemory: DexterPersistentMemoryContext
+    var personalContextGraph: DexterPersonalContextGraphSnapshot?
+    var crossApplicationContext: DexterCrossApplicationContext?
     var attention: DexterAttentionContext
 
     init(
@@ -95,6 +97,8 @@ struct DexterContext: Equatable {
         recentActions: DexterActionHistoryContext = DexterActionHistoryContext(recentActions: []),
         currentTask: DexterTaskContext = DexterTaskContext(currentTaskDescription: nil),
         persistentMemory: DexterPersistentMemoryContext = .empty,
+        personalContextGraph: DexterPersonalContextGraphSnapshot? = nil,
+        crossApplicationContext: DexterCrossApplicationContext? = nil,
         attention: DexterAttentionContext? = nil
     ) {
         self.userMessage = userMessage
@@ -110,6 +114,8 @@ struct DexterContext: Equatable {
         self.recentActions = recentActions
         self.currentTask = currentTask
         self.persistentMemory = persistentMemory
+        self.personalContextGraph = personalContextGraph
+        self.crossApplicationContext = crossApplicationContext
         self.attention = attention ?? DexterAttentionContext(
             pointerLocationInScreenSpace: resolvedPointerLocation,
             pointerLocationRelativeToDisplay: nil,

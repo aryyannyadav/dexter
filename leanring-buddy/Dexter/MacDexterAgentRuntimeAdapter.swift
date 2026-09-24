@@ -220,6 +220,12 @@ final class CompositeDexterAgentRuntime: AgentRuntime {
     }
 
     func executeAction(_ actionRequest: AgentActionRequest) async throws -> AgentActionResult {
+        if DexterRegisteredToolLocalExecution.isLocallyExecuted(actionRequest) {
+            let result = try await openClawRuntime.executeAction(actionRequest)
+            currentExecutionStatus = openClawRuntime.currentExecutionStatus
+            return result
+        }
+
         if OpenClawRuntimeAllowlist.prefersOpenClawRuntime(actionRequest),
            OpenClawRuntimeAllowlist.isDexterSupportedAction(actionRequest) {
             if openClawRuntime.isAvailable() {
@@ -234,7 +240,7 @@ final class CompositeDexterAgentRuntime: AgentRuntime {
                 return result
             }
 
-            return try await openClawRuntime.executeAction(actionRequest)
+            throw AgentRuntimeError.unavailable
         }
 
         if MacDexterRuntimeAllowlist.isSupported(actionRequest) {

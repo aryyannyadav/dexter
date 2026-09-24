@@ -19,6 +19,9 @@ enum DexterActionRuntimeAllowlist {
         if MacDexterRuntimeAllowlist.isSupported(agentRequest) {
             return true
         }
+        if DexterRegisteredToolLocalExecution.isLocallyExecuted(agentRequest) {
+            return true
+        }
         if OpenClawRuntimeAllowlist.isDexterSupportedAction(agentRequest) {
             return OpenClawLocalEnvironment().openClawExecutableURL != nil
         }
@@ -37,6 +40,15 @@ extension PermissionManager {
             return DexterActionPermissionDecision(
                 isAllowed: false,
                 message: "Dexter does not run \(action.type.rawValue) actions yet. Only approved low-risk actions are enabled.",
+                requiresAccessibilityPermission: false,
+                requiresScreenRecordingPermission: false
+            )
+        }
+
+        if action.parameters["command"] != nil && action.parameters["commandTemplate"] == nil {
+            return DexterActionPermissionDecision(
+                isAllowed: false,
+                message: "Raw shell commands are not allowed. Dexter only runs approved command templates.",
                 requiresAccessibilityPermission: false,
                 requiresScreenRecordingPermission: false
             )
@@ -78,6 +90,14 @@ extension PermissionManager {
             )
 
         case .openURL, .navigate:
+            if action.parameters["browserAction"] != nil {
+                return DexterActionPermissionDecision(
+                    isAllowed: true,
+                    message: "Dexter approved the browser action.",
+                    requiresAccessibilityPermission: false,
+                    requiresScreenRecordingPermission: false
+                )
+            }
             return DexterActionPermissionDecision(
                 isAllowed: false,
                 message: "Opening URLs and navigation actions are not enabled in Dexter yet.",
@@ -166,6 +186,45 @@ extension PermissionManager {
                 requiresAccessibilityPermission: false,
                 requiresScreenRecordingPermission: false
             )
+
+        case .fileOperation:
+            let fileAction = action.parameters["fileAction"] ?? ""
+            if let path = action.parameters["path"],
+               case .rejected(let reason) = DexterApprovedFilePathPolicy.evaluate(path: path) {
+                return DexterActionPermissionDecision(
+                    isAllowed: false,
+                    message: reason,
+                    requiresAccessibilityPermission: false,
+                    requiresScreenRecordingPermission: false
+                )
+            }
+            return DexterActionPermissionDecision(
+                isAllowed: true,
+                message: "Dexter approved file \(fileAction) within approved folders.",
+                requiresAccessibilityPermission: false,
+                requiresScreenRecordingPermission: false
+            )
+
+        case .terminalOperation:
+            let terminalAction = action.parameters["terminalAction"] ?? ""
+            switch DexterTerminalCommandPolicy.resolve(terminalAction: terminalAction, parameters: action.parameters) {
+            case .rejected(let reason):
+                return DexterActionPermissionDecision(
+                    isAllowed: false,
+                    message: reason,
+                    requiresAccessibilityPermission: false,
+                    requiresScreenRecordingPermission: false
+                )
+            case .approved(_, _, _, let readOnly):
+                return DexterActionPermissionDecision(
+                    isAllowed: true,
+                    message: readOnly
+                        ? "Dexter approved read-only terminal inspection."
+                        : "Dexter approved structured terminal execution.",
+                    requiresAccessibilityPermission: false,
+                    requiresScreenRecordingPermission: false
+                )
+            }
         }
     }
 }

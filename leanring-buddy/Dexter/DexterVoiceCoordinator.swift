@@ -6,11 +6,6 @@
 import Combine
 import Foundation
 
-enum DexterVoiceUserMessageSource: Equatable {
-    case pushToTalkTranscript
-    case typedText
-}
-
 /// Coordinates push-to-talk dictation signals into Dexter Voice interaction state.
 /// Does not own transcription or TTS implementations — only lifecycle and settings.
 @MainActor
@@ -79,6 +74,11 @@ final class DexterVoiceCoordinator: ObservableObject {
         if interactionState == .speaking || interactionState == .thinking {
             interactionState = .idle
         }
+    }
+
+    /// Natural turn-taking: user takes the floor — end assistant speaking/thinking before mic capture.
+    func prepareForPushToTalkCapture() {
+        handleUserInterruption()
     }
 
     private func applyDictationSignals(

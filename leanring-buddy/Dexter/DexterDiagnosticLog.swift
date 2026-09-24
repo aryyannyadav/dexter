@@ -8,7 +8,7 @@ import Foundation
 /// Structured console diagnostics for voice, model, vision, and TTS pipelines. Never logs secrets or screen contents.
 enum DexterDiagnosticLog {
     static func voice(_ message: String) {
-        print("[DEXTER][VOICE] \(message)")
+        DexterObservabilityLog.voice(message)
     }
 
     static func stt(_ message: String) {

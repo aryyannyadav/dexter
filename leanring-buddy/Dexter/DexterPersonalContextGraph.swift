@@ -2,81 +2,51 @@
 //  DexterPersonalContextGraph.swift
 //  leanring-buddy
 //
+//  Facade over the in-memory personal context graph (backed by MemoryStore + authorized context).
+//
 
 import Foundation
 
-enum DexterContextGraphEntityKind: String, Equatable {
-    case user
-    case project
-    case goal
-    case task
-    case commitment
-    case application
-    case workflow
-    case preference
-    case skill
-    case memory
-    case conversation
-}
-
-enum DexterContextGraphRelationshipKind: String, Equatable {
-    case owns
-    case contains
-    case belongsTo
-    case prefers
-    case learned
-    case uses
-    case requires
-    case hasVerificationCondition
-}
-
-struct DexterContextGraphEntity: Equatable, Identifiable {
-    let id: String
-    let kind: DexterContextGraphEntityKind
-    let title: String
-    let detail: String?
-}
-
-struct DexterContextGraphRelationship: Equatable {
-    let fromEntityIdentifier: String
-    let relationship: DexterContextGraphRelationshipKind
-    let toEntityIdentifier: String
-}
-
-/// Lightweight graph abstraction over MemoryStore — persistence stays in PersistentMemoryStore.
 enum DexterPersonalContextGraph {
-    static func entities(from memoryStore: MemoryStore) -> [DexterContextGraphEntity] {
-        var entities: [DexterContextGraphEntity] = []
-
-        for entry in memoryStore.allPersistentEntries() where entry.kind == .userPreference {
-            entities.append(
-                DexterContextGraphEntity(
-                    id: "preference:\(entry.id.uuidString)",
-                    kind: .preference,
-                    title: entry.title,
-                    detail: entry.content
-                )
-            )
-        }
-
-        if let taskDescription = memoryStore.activeTaskDescription?.nonEmptyTrimmedValue {
-            entities.append(
-                DexterContextGraphEntity(
-                    id: "task:current",
-                    kind: .task,
-                    title: "Current task",
-                    detail: taskDescription
-                )
-            )
-        }
-
-        return entities
+    static func buildSnapshot(
+        memoryStore: MemoryStore,
+        authorizedInput: DexterAuthorizedPersonalContextInput
+    ) -> DexterPersonalContextGraphSnapshot {
+        DexterPersonalContextGraphBuilder.build(
+            memoryStore: memoryStore,
+            authorizedInput: authorizedInput
+        )
     }
-}
 
-private extension String {
-    var nonEmptyTrimmedValue: String? {
-        let trimmedValue = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedValue.isEmpty ? nil : trimmedValue
+    static func tryRespondToPersonalContextQuery(
+        userMessage: String,
+        memoryStore: MemoryStore,
+        lastAuthorizedContext: DexterContext?
+    ) -> String? {
+        guard let queryKind = DexterPersonalContextIntentRecognizer.recognize(fromUserMessage: userMessage) else {
+            return nil
+        }
+
+        let authorizedInput: DexterAuthorizedPersonalContextInput
+        if let lastAuthorizedContext {
+            authorizedInput = .fromDexterContext(lastAuthorizedContext)
+        } else {
+            authorizedInput = .memoryOnly(memoryStore: memoryStore, userMessage: userMessage)
+        }
+
+        let graph = buildSnapshot(memoryStore: memoryStore, authorizedInput: authorizedInput)
+        return DexterPersonalContextQueryEngine.respond(
+            queryKind: queryKind,
+            graph: graph,
+            authorizedInput: authorizedInput
+        )
+    }
+
+    /// Legacy helper used by older call sites.
+    static func entities(from memoryStore: MemoryStore) -> [DexterContextGraphEntity] {
+        buildSnapshot(
+            memoryStore: memoryStore,
+            authorizedInput: .memoryOnly(memoryStore: memoryStore, userMessage: "")
+        ).entities
     }
 }

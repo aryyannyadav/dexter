@@ -16,9 +16,9 @@ enum DexterTurnTrace {
     private(set) static var currentTurnIdentifier: UUID?
 
     static func beginTurn() -> UUID {
-        let turnIdentifier = UUID()
+        let turnIdentifier = DexterTaskTraceRecorder.shared.beginTask()
         currentTurnIdentifier = turnIdentifier
-        log("received user request")
+        log("invocation received")
         return turnIdentifier
     }
 
@@ -27,16 +27,13 @@ enum DexterTurnTrace {
     }
 
     static func finish(outcome: DexterTurnOutcome) {
-        log("orchestrator completed outcome=\(outcome.rawValue)")
+        let operationalOutcome = DexterTaskTraceRecorder.mapTurnOutcome(outcome)
+        DexterTaskTraceRecorder.shared.endTask(outcome: operationalOutcome)
+        log("outcome=\(operationalOutcome.rawValue)")
         endTurn()
     }
 
     static func log(_ message: String) {
-        guard let turnIdentifier = currentTurnIdentifier else {
-            print("[TURN] \(message)")
-            return
-        }
-        let shortIdentifier = turnIdentifier.uuidString.prefix(8)
-        print("[TURN \(shortIdentifier)] \(message)")
+        DexterObservabilityLog.task(DexterObservabilityRedaction.redact(message))
     }
 }

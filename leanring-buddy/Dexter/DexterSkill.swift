@@ -2,35 +2,93 @@
 //  DexterSkill.swift
 //  leanring-buddy
 //
+//  Skills describe reusable capability bundles. They do not execute independently —
+//  Dexter routes them through Context → Intent → Planner → Permission → Tool Gateway → … → Memory.
+//
 
 import Foundation
 
-/// Future marketplace/SDK surface. Skills are not executed directly — Dexter maps them to typed actions + OpenClaw.
-struct DexterSkillDefinition: Equatable, Identifiable {
-    let id: String
-    let displayName: String
-    let description: String
-    let triggerPhrases: [String]
-    let requiredOpenClawCapabilities: [String]
-    let defaultRiskLevel: DexterActionRiskLevel
+enum DexterSkillIdentifier: String, Codable, Equatable, CaseIterable {
+    case coding = "coding"
+    case research = "research"
+    case browserResearch = "browser_research"
+    case fileOrganization = "file_organization"
+    case study = "study"
+    case productivity = "productivity"
+    case developmentEnvironment = "development_environment"
 }
 
-enum DexterBuiltInSkillCatalog {
-    static let codingEnvironment = DexterSkillDefinition(
-        id: "coding-environment",
-        displayName: "Development Environment",
-        description: "Prepare a coding workspace with approved applications and editor fixes.",
-        triggerPhrases: ["prepare my coding environment"],
-        requiredOpenClawCapabilities: ["computer.act"],
-        defaultRiskLevel: .moderateRisk
-    )
+/// Canonical pipeline shared by skills, workflows, and proactive automations (single runtime).
+enum DexterSkillPipelinePhase: String, Codable, Equatable, CaseIterable {
+    case skill = "SKILL"
+    case trigger = "TRIGGER"
+    case context = "CONTEXT"
+    case intent = "INTENT"
+    case plan = "PLAN"
+    case policy = "POLICY"
+    case toolGateway = "TOOL_GATEWAY"
+    case execute = "EXECUTE"
+    case verify = "VERIFY"
+    case memory = "MEMORY"
+}
 
-    static let browserResearch = DexterSkillDefinition(
-        id: "browser-research",
-        displayName: "Browser Research",
-        description: "Navigate and inspect browser pages through OpenClaw browser capabilities.",
-        triggerPhrases: ["search the web for"],
-        requiredOpenClawCapabilities: ["browser.proxy", "computer.act"],
-        defaultRiskLevel: .lowRisk
-    )
+struct DexterSkillInput: Codable, Equatable, Identifiable {
+    let id: String
+    let title: String
+    let description: String
+    let isRequired: Bool
+}
+
+struct DexterSkillTrigger: Codable, Equatable {
+    let phrases: [String]
+    /// When set, boosts resolution when the structured intent kind matches.
+    let alignedIntentKinds: [DexterIntentKind]
+}
+
+struct DexterSkillWorkflowBinding: Codable, Equatable {
+    /// Optional link to a reusable `DexterLearnedWorkflow.workflowIdentifier`.
+    let workflowIdentifier: String?
+}
+
+struct DexterSkillVerification: Codable, Equatable {
+    let policy: String
+    let expectedStates: [String]
+    let stopOnUncertainty: Bool
+}
+
+struct DexterSkillMemoryRequirements: Codable, Equatable {
+    let includePersistentMemoryInContext: Bool
+    let includePersonalContextGraph: Bool
+    let includeCurrentTask: Bool
+    let memoryRecallLimit: Int
+    let preferredMemoryTypes: [String]
+}
+
+struct DexterSkill: Codable, Equatable, Identifiable {
+    let id: DexterSkillIdentifier
+    let name: String
+    let description: String
+    let trigger: DexterSkillTrigger
+    let inputs: [DexterSkillInput]
+    let requiredCapabilities: [String]
+    let permissions: [String]
+    let workflow: DexterSkillWorkflowBinding
+    let verification: DexterSkillVerification
+    let memoryRequirements: DexterSkillMemoryRequirements
+    let owner: String
+    let version: String
+    /// Future composition: skills that may be chained with this one in later releases.
+    let composableWithSkillIds: [DexterSkillIdentifier]
+}
+
+struct DexterSkillResolution: Equatable {
+    let skill: DexterSkill
+    let confidence: Double
+}
+
+struct DexterSkillEngineResult: Equatable {
+    let matchedSkill: DexterSkill?
+    let matchConfidence: Double
+    let mergedIntentPlan: DexterIntentPlan?
+    let pipelinePhases: [DexterSkillPipelinePhase]
 }

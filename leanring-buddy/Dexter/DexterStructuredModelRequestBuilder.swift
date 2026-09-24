@@ -16,7 +16,10 @@ struct DexterStructuredModelRequest: Equatable {
 enum DexterStructuredModelRequestBuilder {
     static func build(
         dexterContext: DexterContext,
-        relevancePlan: DexterContextRelevancePlan
+        relevancePlan: DexterContextRelevancePlan,
+        availableToolsPromptSection: String? = nil,
+        teachingPromptSection: String? = nil,
+        skillPromptSection: String? = nil
     ) -> DexterStructuredModelRequest {
         var sections: [String] = []
 
@@ -35,7 +38,7 @@ enum DexterStructuredModelRequestBuilder {
 
         if relevancePlan.includePointerContext {
             sections.append(sectionHeader("POINTER CONTEXT"))
-            sections.append(pointerContextDescription(from: dexterContext.attention))
+            sections.append(pointerContextDescription(from: dexterContext))
         }
 
         if relevancePlan.includeScreenContext {
@@ -50,7 +53,7 @@ enum DexterStructuredModelRequestBuilder {
 
         if relevancePlan.includeRecentConversationInPrompt {
             sections.append(sectionHeader("RECENT CONVERSATION"))
-            sections.append(recentConversationDescription(from: dexterContext.conversation.recentExchanges))
+            sections.append(recentConversationDescription(from: dexterContext.conversation))
         }
 
         if relevancePlan.includeCurrentTask {
@@ -61,6 +64,35 @@ enum DexterStructuredModelRequestBuilder {
         if relevancePlan.includePersistentMemory {
             sections.append(sectionHeader("DEXTER MEMORY"))
             sections.append(persistentMemoryDescription(from: dexterContext.persistentMemory))
+        }
+
+        if relevancePlan.includePersonalContextGraph,
+           let graph = dexterContext.personalContextGraph,
+           !graph.entities.isEmpty {
+            sections.append(sectionHeader("PERSONAL CONTEXT GRAPH"))
+            sections.append(DexterPersonalContextGraphBuilder.promptSummary(from: graph))
+        }
+
+        if relevancePlan.includePersonalContextGraph,
+           let crossApplicationSection = dexterContext.crossApplicationContext?.promptSection,
+           crossApplicationSection != "none" {
+            sections.append(sectionHeader("CROSS-APPLICATION CONTEXT"))
+            sections.append(crossApplicationSection)
+        }
+
+        if let availableToolsPromptSection, !availableToolsPromptSection.isEmpty {
+            sections.append(sectionHeader("AVAILABLE TOOLS"))
+            sections.append(availableToolsPromptSection)
+        }
+
+        if let teachingPromptSection, !teachingPromptSection.isEmpty {
+            sections.append(sectionHeader("TEACHING MODE"))
+            sections.append(teachingPromptSection)
+        }
+
+        if let skillPromptSection, !skillPromptSection.isEmpty {
+            sections.append(sectionHeader("ACTIVE SKILL"))
+            sections.append(skillPromptSection)
         }
 
         let structuredUserPrompt = sections.joined(separator: "\n\n")
@@ -75,7 +107,7 @@ enum DexterStructuredModelRequestBuilder {
 
         let conversationHistory: [DexterConversationExchange]
         if relevancePlan.includeRecentConversationInAPIHistory {
-            conversationHistory = dexterContext.conversation.recentExchanges
+            conversationHistory = dexterContext.conversation.apiHistoryExchanges
         } else {
             conversationHistory = []
         }
@@ -120,6 +152,12 @@ enum DexterStructuredModelRequestBuilder {
                 lines.append("Current step: \(currentStep.title) — \(currentStep.instruction)")
             }
         }
+        if let accountabilitySummary = DexterAccountabilityContextPlanner.promptSummary(
+            for: taskContext.accountabilitySnapshot
+        ) {
+            lines.append("Structured tasks:")
+            lines.append(accountabilitySummary)
+        }
         if lines.isEmpty {
             return "none"
         }
@@ -129,17 +167,11 @@ enum DexterStructuredModelRequestBuilder {
     private static func persistentMemoryDescription(from persistentMemory: DexterPersistentMemoryContext) -> String {
         var lines: [String] = []
 
-        if !persistentMemory.userPreferences.isEmpty {
-            lines.append("User preferences:")
-            for preference in persistentMemory.userPreferences {
-                lines.append("- \(preference.title): \(preference.content)")
-            }
-        }
-
-        if !persistentMemory.rememberedFacts.isEmpty {
-            lines.append("Remembered facts:")
-            for fact in persistentMemory.rememberedFacts {
-                lines.append("- \(fact.content)")
+        if !persistentMemory.retrievedMemories.isEmpty {
+            lines.append("Relevant memories (ranked for this request):")
+            for memory in persistentMemory.retrievedMemories {
+                let label = memory.title ?? memory.type.rawValue
+                lines.append("- [\(label)] \(memory.content)")
             }
         }
 
@@ -167,7 +199,8 @@ enum DexterStructuredModelRequestBuilder {
         }
     }
 
-    private static func pointerContextDescription(from attention: DexterAttentionContext) -> String {
+    private static func pointerContextDescription(from context: DexterContext) -> String {
+        let attention = context.attention
         var lines: [String] = []
         lines.append(String(
             format: "pointer at screen coordinates (%.0f, %.0f)",
@@ -175,7 +208,19 @@ enum DexterStructuredModelRequestBuilder {
             attention.pointerLocationInScreenSpace.y
         ))
 
-        if let displayIdentifier = attention.primaryDisplayIdentifier {
+        if let pointerContext = context.pointer {
+            if let displayIdentifier = pointerContext.screenDisplayIdentifier {
+                lines.append("display identifier: \(displayIdentifier)")
+            }
+            lines.append("pointer captured at: \(ISO8601DateFormatter().string(from: pointerContext.capturedAt))")
+            if let semanticTarget = pointerContext.semanticTarget {
+                lines.append(semanticTarget.modelSummaryLine)
+                let evidenceSummary = semanticTarget.evidence.map { "\($0.source.rawValue): \($0.detail)" }.joined(separator: "; ")
+                if !evidenceSummary.isEmpty {
+                    lines.append("evidence: \(evidenceSummary)")
+                }
+            }
+        } else if let displayIdentifier = attention.primaryDisplayIdentifier {
             lines.append("display identifier: \(displayIdentifier)")
         }
 
@@ -255,12 +300,23 @@ enum DexterStructuredModelRequestBuilder {
         }
     }
 
-    private static func recentConversationDescription(from exchanges: [DexterConversationExchange]) -> String {
-        guard !exchanges.isEmpty else { return "no prior exchanges in this session" }
+    private static func recentConversationDescription(from conversation: DexterConversationContext) -> String {
+        var lines: [String] = []
 
-        return exchanges.map { exchange in
-            "user: \(exchange.userTranscript)\nassistant: \(exchange.assistantResponse)"
-        }.joined(separator: "\n\n")
+        if let earlierSessionSummary = conversation.earlierSessionSummary?.nonEmptyTrimmedValue {
+            lines.append(earlierSessionSummary)
+        }
+
+        if conversation.recentExchanges.isEmpty {
+            lines.append("no recent exchanges in this session")
+        } else {
+            let recentLines = conversation.recentExchanges.map { exchange in
+                "user: \(exchange.userTranscript)\nassistant: \(exchange.assistantResponse)"
+            }
+            lines.append(recentLines.joined(separator: "\n\n"))
+        }
+
+        return lines.joined(separator: "\n\n")
     }
 
     private static func imageInput(

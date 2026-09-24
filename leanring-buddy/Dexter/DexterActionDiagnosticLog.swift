@@ -7,22 +7,27 @@ import Foundation
 
 enum DexterActionDiagnosticLog {
     static func intent(_ message: String) {
-        print("[DEXTER][INTENT] \(message)")
+        DexterTaskTraceRecorder.shared.markPhase(.intent)
+        DexterObservabilityLog.intent(message)
     }
 
     static func plan(_ message: String) {
-        print("[DEXTER][PLAN] \(message)")
+        DexterTaskTraceRecorder.shared.markPhase(.plan)
+        DexterObservabilityLog.plan(message)
     }
 
     static func permission(_ message: String) {
-        print("[DEXTER][PERMISSION] \(message)")
+        DexterTaskTraceRecorder.shared.markPhase(.permission)
+        DexterObservabilityLog.permission(message)
     }
 
     static func action(_ message: String) {
-        print("[DEXTER][ACTION] \(message)")
+        DexterTaskTraceRecorder.shared.markPhase(.executionResults)
+        DexterObservabilityLog.tool(message)
     }
 
     static func verify(_ message: String) {
-        print("[DEXTER][VERIFY] \(message)")
+        DexterTaskTraceRecorder.shared.markPhase(.verification)
+        DexterObservabilityLog.verify(message)
     }
 }

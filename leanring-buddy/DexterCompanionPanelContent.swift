@@ -11,6 +11,7 @@ import SwiftUI
 struct DexterCompanionPanelContent: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isAdvancedSettingsExpanded: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -25,14 +26,21 @@ struct DexterCompanionPanelContent: View {
                     onboardingOrPermissionsBlock
                         .padding(.top, 12)
 
-                    if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                        DexterDemonstrationPhaseBanner(phaseStore: companionManager.dexterDemonstrationPhaseStore)
+                    if companionManager.interactiveOnboardingStore.isActive {
+                        DexterInteractiveOnboardingCard(
+                            interactiveOnboardingStore: companionManager.interactiveOnboardingStore
+                        )
+                        permissionsReminderIfNeeded
+                    } else if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                        DexterRuntimeUIStateBanner(runtimeUIStateStore: companionManager.dexterRuntimeUIStateStore)
                         voiceAndChatSection
                         actionAndExecutionSection
                         taskStatusSection
                         settingsSection
-                        DexterMemoryManagementView(companionManager: companionManager)
-                            .onAppear { companionManager.reloadDexterMemoryPresentation() }
+                        if isAdvancedSettingsExpanded {
+                            DexterMemoryManagementView(companionManager: companionManager)
+                                .onAppear { companionManager.reloadDexterMemoryPresentation() }
+                        }
                     } else if !companionManager.allPermissionsGranted {
                         permissionsListSection
                     }
@@ -119,20 +127,30 @@ struct DexterCompanionPanelContent: View {
 
     @ViewBuilder
     private var actionAndExecutionSection: some View {
+        if let failurePresentation = companionManager.dexterRuntimeUIStateStore.failurePresentation {
+            DexterRuntimeFailureCard(failurePresentation: failurePresentation)
+        }
+
         if let confirmation = companionManager.actionConfirmationPresentation {
             DexterActionConfirmationView(
                 presentation: confirmation,
                 onCancel: { companionManager.cancelPendingActionConfirmation() },
                 onAllow: { companionManager.approvePendingActionConfirmation() }
             )
-        } else if let action = companionManager.panelLastTypedAction,
-           let phase = DexterPanelPresentation.actionPhaseLabel(for: action) {
-            switch action.state {
-            case .proposed, .awaitingConfirmation:
-                DexterActionProposalCard(actionDescription: action.humanReadableDescription, phaseLabel: phase)
-            case .approved, .executing:
-                DexterExecutionProgressCard(actionDescription: action.humanReadableDescription, phaseLabel: phase)
-            case .completed, .failed, .verificationFailed:
+        } else if let action = companionManager.panelLastTypedAction {
+            let runtimeState = companionManager.dexterRuntimeUIStateStore.currentState
+            switch runtimeState {
+            case .planning, .waitingPermission:
+                if let phase = DexterPanelPresentation.actionPhaseLabel(for: action) {
+                    DexterActionProposalCard(actionDescription: action.humanReadableDescription, phaseLabel: phase)
+                }
+            case .acting, .verifying:
+                DexterExecutionProgressCard(
+                    runtimeState: runtimeState,
+                    statusDetail: companionManager.dexterRuntimeUIStateStore.statusDetail,
+                    actionDescription: action.humanReadableDescription
+                )
+            case .done:
                 let verificationLabel = DexterPanelPresentation.verificationResultLabel(for: action)
                 if verificationLabel != .none {
                     DexterVerificationResultCard(
@@ -140,8 +158,25 @@ struct DexterCompanionPanelContent: View {
                         summary: companionManager.panelLastActionSummary
                     )
                 }
-            case .cancelled:
+            case .failed, .cancelled:
                 EmptyView()
+            default:
+                if let phase = DexterPanelPresentation.actionPhaseLabel(for: action) {
+                    switch action.state {
+                    case .proposed, .awaitingConfirmation:
+                        DexterActionProposalCard(actionDescription: action.humanReadableDescription, phaseLabel: phase)
+                    case .completed, .failed, .verificationFailed:
+                        let verificationLabel = DexterPanelPresentation.verificationResultLabel(for: action)
+                        if verificationLabel != .none {
+                            DexterVerificationResultCard(
+                                resultLabel: verificationLabel,
+                                summary: companionManager.panelLastActionSummary
+                            )
+                        }
+                    default:
+                        EmptyView()
+                    }
+                }
             }
         }
     }
@@ -154,12 +189,17 @@ struct DexterCompanionPanelContent: View {
         }
     }
 
+    @ViewBuilder
+    private var permissionsReminderIfNeeded: some View {
+        if !companionManager.allPermissionsGranted {
+            permissionsListSection
+        }
+    }
+
     private var settingsSection: some View {
         DexterPanelCard {
             VStack(alignment: .leading, spacing: 12) {
                 DexterSectionHeader(title: "Settings")
-
-                modelPickerRow
 
                 Toggle(isOn: Binding(
                     get: { companionManager.isPushToTalkEnabled },
@@ -195,7 +235,17 @@ struct DexterCompanionPanelContent: View {
                 .toggleStyle(.switch)
                 .tint(DexterIdentity.accent)
 
-                speechToTextProviderRow
+                DisclosureGroup(isExpanded: $isAdvancedSettingsExpanded) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        modelPickerRow
+                        speechToTextProviderRow
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    Text("Advanced")
+                        .font(DexterIdentity.Typography.bodyMedium())
+                        .foregroundColor(DS.Colors.textSecondary)
+                }
             }
         }
     }
@@ -206,16 +256,16 @@ struct DexterCompanionPanelContent: View {
         if companionManager.hasCompletedOnboarding {
             return "Grant all permissions below to restore Dexter."
         }
-        return "Dexter lives in your menu bar — voice, screen context, and guided actions when you ask."
+        return "Grant permissions, then try Dexter on your screen — point, ask, and act."
     }
 
     private var panelStatusText: String {
         if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
             return "Setup"
         }
-        let demoPhase = companionManager.dexterDemonstrationPhaseStore.currentPhase
-        if demoPhase != .idle {
-            return demoPhase.rawValue
+        let runtimeState = companionManager.dexterRuntimeUIStateStore.currentState
+        if runtimeState != .idle {
+            return runtimeState.rawValue
         }
         if !companionManager.isOverlayVisible {
             return "Ready"
@@ -241,8 +291,14 @@ struct DexterCompanionPanelContent: View {
     }
 
     private var startOnboardingBlock: some View {
-        Button("Start") { companionManager.triggerOnboarding() }
-            .dsPrimaryButtonStyle()
+        VStack(alignment: .leading, spacing: 8) {
+            Text("You'll point at something, ask what it is, then ask Dexter to do a small safe action.")
+                .font(DexterIdentity.Typography.body())
+                .foregroundColor(DS.Colors.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Start") { companionManager.triggerOnboarding() }
+                .dsPrimaryButtonStyle()
+        }
     }
 
     private var permissionsListSection: some View {

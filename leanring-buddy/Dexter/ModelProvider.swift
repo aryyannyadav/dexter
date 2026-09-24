@@ -17,6 +17,9 @@ struct DexterModelGenerationRequest: Equatable {
     let conversationHistory: [DexterConversationExchange]
     let userRequestedScreenContext: Bool
     let screenCaptureAvailability: DexterContextAvailability
+    /// Scope-selected JPEG for local vision providers (1280 max edge, no upscale).
+    let preparedVisionPayload: DexterPreparedVisionPayload?
+    let visionRequest: DexterVisionRequest?
 
     init(
         systemPrompt: String,
@@ -24,7 +27,9 @@ struct DexterModelGenerationRequest: Equatable {
         images: [DexterModelImageInput],
         conversationHistory: [DexterConversationExchange],
         userRequestedScreenContext: Bool = false,
-        screenCaptureAvailability: DexterContextAvailability = .notApplicable
+        screenCaptureAvailability: DexterContextAvailability = .notApplicable,
+        preparedVisionPayload: DexterPreparedVisionPayload? = nil,
+        visionRequest: DexterVisionRequest? = nil
     ) {
         self.systemPrompt = systemPrompt
         self.userPrompt = userPrompt
@@ -32,12 +37,25 @@ struct DexterModelGenerationRequest: Equatable {
         self.conversationHistory = conversationHistory
         self.userRequestedScreenContext = userRequestedScreenContext
         self.screenCaptureAvailability = screenCaptureAvailability
+        self.preparedVisionPayload = preparedVisionPayload
+        self.visionRequest = visionRequest
     }
 }
 
 struct DexterModelGenerationResult: Equatable {
     let fullResponseText: String
     let duration: TimeInterval
+    let visionResponse: DexterVisionResponse?
+
+    init(
+        fullResponseText: String,
+        duration: TimeInterval,
+        visionResponse: DexterVisionResponse? = nil
+    ) {
+        self.fullResponseText = fullResponseText
+        self.duration = duration
+        self.visionResponse = visionResponse
+    }
 }
 
 /// Abstraction over reasoning/generation backends (Claude, OpenAI, etc.).

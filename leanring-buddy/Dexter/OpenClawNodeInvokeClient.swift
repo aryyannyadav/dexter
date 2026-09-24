@@ -5,14 +5,29 @@
 
 import Foundation
 
+enum OpenClawNodeInvokeTimeouts {
+    static let defaultInvokeTimeoutMilliseconds = 60_000
+    static let computerActCloseInvokeTimeoutMilliseconds = 10_000
+}
+
 struct OpenClawNodeInvokeResult: Equatable {
     let ok: Bool
     let errorMessage: String?
     let combinedOutput: String
 }
 
+protocol OpenClawNodeInvoking: AnyObject {
+    func invoke(
+        nodeIdentifier: String,
+        command: String,
+        parametersJSON: String,
+        invokeTimeoutMilliseconds: Int
+    ) async throws -> OpenClawNodeInvokeResult
+    func cancelRunningInvoke()
+}
+
 /// Invokes paired-node commands through the local Gateway (`openclaw nodes invoke`).
-final class OpenClawNodeInvokeClient {
+final class OpenClawNodeInvokeClient: OpenClawNodeInvoking {
     private let localEnvironment: OpenClawLocalEnvironment
     private var runningProcess: Process?
 
@@ -24,7 +39,7 @@ final class OpenClawNodeInvokeClient {
         nodeIdentifier: String,
         command: String,
         parametersJSON: String,
-        invokeTimeoutMilliseconds: Int = 60_000
+        invokeTimeoutMilliseconds: Int = OpenClawNodeInvokeTimeouts.defaultInvokeTimeoutMilliseconds
     ) async throws -> OpenClawNodeInvokeResult {
         guard let openClawExecutableURL = localEnvironment.openClawExecutableURL else {
             throw AgentRuntimeError.unavailable
@@ -194,7 +209,7 @@ enum OpenClawComputerActRequestBuilder {
 enum OpenClawComputerActExecutor {
     static func performComputerAct(
         nodeIdentifier: String,
-        nodeInvokeClient: OpenClawNodeInvokeClient,
+        nodeInvokeClient: OpenClawNodeInvoking,
         parametersJSON: String,
         executionIdentifier: String
     ) async throws -> OpenClawNodeInvokeResult {
@@ -202,7 +217,8 @@ enum OpenClawComputerActExecutor {
         let invokeResult = try await nodeInvokeClient.invoke(
             nodeIdentifier: nodeIdentifier,
             command: "computer.act",
-            parametersJSON: parametersJSON
+            parametersJSON: parametersJSON,
+            invokeTimeoutMilliseconds: OpenClawNodeInvokeTimeouts.defaultInvokeTimeoutMilliseconds
         )
 
         let closeParametersJSON = OpenClawComputerActRequestBuilder.closeExecutionParametersJSON(
@@ -213,7 +229,7 @@ enum OpenClawComputerActExecutor {
             nodeIdentifier: nodeIdentifier,
             command: "computer.act",
             parametersJSON: closeParametersJSON,
-            invokeTimeoutMilliseconds: 10_000
+            invokeTimeoutMilliseconds: OpenClawNodeInvokeTimeouts.computerActCloseInvokeTimeoutMilliseconds
         )
 
         return invokeResult

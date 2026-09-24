@@ -263,23 +263,46 @@ struct DexterActionProposalCard: View {
 }
 
 struct DexterExecutionProgressCard: View {
+    let runtimeState: DexterRuntimeUIState
+    let statusDetail: String
     let actionDescription: String
-    let phaseLabel: DexterPanelActionPhaseLabel
 
     var body: some View {
         DexterPanelCard {
             VStack(alignment: .leading, spacing: 8) {
-                DexterSectionHeader(title: "Execution")
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(phaseLabel.rawValue)
-                        .font(DexterIdentity.Typography.bodyMedium())
-                        .foregroundColor(DS.Colors.textSecondary)
+                DexterSectionHeader(title: "Execution", subtitle: statusDetail)
+                Text(runtimeState.rawValue)
+                    .font(DexterIdentity.Typography.bodyMedium())
+                    .foregroundColor(DexterIdentity.accent)
+                if !actionDescription.isEmpty {
+                    Text(actionDescription)
+                        .font(DexterIdentity.Typography.body())
+                        .foregroundColor(DS.Colors.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                Text(actionDescription)
-                    .font(DexterIdentity.Typography.body())
+            }
+        }
+    }
+}
+
+struct DexterRuntimeFailureCard: View {
+    let failurePresentation: DexterRuntimeUIFailurePresentation
+
+    var body: some View {
+        DexterPanelCard {
+            VStack(alignment: .leading, spacing: 8) {
+                DexterSectionHeader(title: "Something went wrong")
+                Text(failurePresentation.whatFailed)
+                    .font(DexterIdentity.Typography.bodyMedium())
                     .foregroundColor(DS.Colors.textPrimary)
+                Text(failurePresentation.why)
+                    .font(DexterIdentity.Typography.body())
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(failurePresentation.whatYouCanDoNext)
+                    .font(DexterIdentity.Typography.body())
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -327,20 +350,44 @@ struct DexterTaskStatusCard: View {
     }
 }
 
-struct DexterDemonstrationPhaseBanner: View {
-    @ObservedObject var phaseStore: DexterDemonstrationPhaseStore
+struct DexterInteractiveOnboardingCard: View {
+    @ObservedObject var interactiveOnboardingStore: DexterInteractiveOnboardingStore
 
     var body: some View {
-        if phaseStore.currentPhase != .idle {
+        DexterPanelCard {
+            VStack(alignment: .leading, spacing: 8) {
+                DexterSectionHeader(title: "Get to know Dexter", subtitle: interactiveOnboardingStore.panelHeadline)
+                Text(interactiveOnboardingStore.panelDetail)
+                    .font(DexterIdentity.Typography.body())
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+struct DexterRuntimeUIStateBanner: View {
+    @ObservedObject var runtimeUIStateStore: DexterRuntimeUIStateStore
+
+    var body: some View {
+        if runtimeUIStateStore.currentState != .idle {
             DexterPanelCard {
                 VStack(alignment: .leading, spacing: 6) {
-                    DexterSectionHeader(title: "Demo phase", subtitle: phaseStore.statusDetail)
-                    Text(phaseStore.currentPhase.rawValue)
+                    DexterSectionHeader(title: "Status", subtitle: runtimeUIStateStore.statusDetail)
+                    Text(runtimeUIStateStore.currentState.rawValue)
                         .font(DexterIdentity.Typography.bodyMedium())
                         .foregroundColor(DexterIdentity.accent)
                 }
             }
         }
+    }
+}
+
+struct DexterDemonstrationPhaseBanner: View {
+    @ObservedObject var phaseStore: DexterRuntimeUIStateStore
+
+    var body: some View {
+        DexterRuntimeUIStateBanner(runtimeUIStateStore: phaseStore)
     }
 }
 

@@ -65,22 +65,33 @@ protocol AgentRuntime: AnyObject {
     func cancelCurrentAction() async -> AgentActionCancellationResult
 }
 
+/// OpenClaw-backed runtime: maps approved `AgentActionRequest` values through the Dexter Tool Gateway.
 final class OpenClawAgentRuntimeAdapter: AgentRuntime {
     let runtimeName = "OpenClaw"
 
-    private let localEnvironment: OpenClawLocalEnvironment
-    private let healthMonitor: OpenClawGatewayHealthMonitor
-    private let nodeInvokeClient: OpenClawNodeInvokeClient
-    private(set) var currentExecutionStatus: AgentActionExecutionStatus = .idle
+    private let toolGateway: DexterToolGateway
+    private let toolRegistryGateway: DexterToolRegistryGateway
+    private let localEnvironment: OpenClawLocalEnvironmentProviding
+    private let healthMonitor: OpenClawHealthMonitoring
+
+    var currentExecutionStatus: AgentActionExecutionStatus {
+        (toolGateway as? OpenClawDexterToolGatewayAdapter)?.currentExecutionStatus ?? .idle
+    }
 
     init(
-        localEnvironment: OpenClawLocalEnvironment = OpenClawLocalEnvironment(),
-        healthMonitor: OpenClawGatewayHealthMonitor = .shared,
-        nodeInvokeClient: OpenClawNodeInvokeClient = OpenClawNodeInvokeClient()
+        localEnvironment: OpenClawLocalEnvironmentProviding = OpenClawLocalEnvironment(),
+        healthMonitor: OpenClawHealthMonitoring = OpenClawGatewayHealthMonitor.shared,
+        toolGateway: DexterToolGateway? = nil,
+        toolRegistryGateway: DexterToolRegistryGateway? = nil
     ) {
         self.localEnvironment = localEnvironment
         self.healthMonitor = healthMonitor
-        self.nodeInvokeClient = nodeInvokeClient
+        let resolvedToolGateway = toolGateway ?? OpenClawDexterToolGatewayAdapter(
+            localEnvironment: localEnvironment,
+            healthMonitor: healthMonitor
+        )
+        self.toolGateway = resolvedToolGateway
+        self.toolRegistryGateway = toolRegistryGateway ?? DexterToolRegistryGateway(toolGateway: resolvedToolGateway)
     }
 
     func isAvailable() -> Bool {
@@ -89,180 +100,112 @@ final class OpenClawAgentRuntimeAdapter: AgentRuntime {
         else {
             return false
         }
-        return healthMonitor.preferredNodeSnapshot.isConnected
-            && healthMonitor.preferredNodeSnapshot.hasComputerActCommand
+        let nodeSnapshot = healthMonitor.preferredNodeSnapshot
+        return nodeSnapshot.isConnected && nodeSnapshot.hasComputerActCommand
     }
 
     func executeAction(_ actionRequest: AgentActionRequest) async throws -> AgentActionResult {
-        guard localEnvironment.openClawExecutableURL != nil else {
-            throw AgentRuntimeError.unavailable
-        }
-
-        await healthMonitor.refreshHealthIfNeeded(force: true)
-
-        guard healthMonitor.connectionState.isConnected else {
-            throw AgentRuntimeError.unavailable
-        }
-
-        guard OpenClawRuntimeAllowlist.isDexterSupportedAction(actionRequest) else {
+        guard let toolProposal = DexterTool.registeredToolProposal(from: actionRequest) else {
             throw AgentRuntimeError.unsupportedAction(
-                "Dexter does not map this action to an OpenClaw node command yet."
+                "Dexter does not map this action to a registered tool."
             )
         }
 
-        let nodeSnapshot = healthMonitor.preferredNodeSnapshot
-        guard nodeSnapshot.isPaired else {
-            throw AgentRuntimeError.executionFailed(
-                "OpenClaw has no paired Mac node. Open OpenClaw and pair this Mac before running computer actions."
-            )
+        switch await toolRegistryGateway.validate(proposal: toolProposal) {
+        case .failure(.unknownTool(let toolName)):
+            throw AgentRuntimeError.unsupportedAction("Unknown registered tool: \(toolName).")
+        case .failure(.toolNotAvailable(let toolName)):
+            throw AgentRuntimeError.executionFailed("\(toolName) is not available on this machine/runtime.")
+        case .failure(.invalidParameters(let message)):
+            throw AgentRuntimeError.unsupportedAction(message)
+        case .success:
+            break
         }
 
-        guard nodeSnapshot.isConnected else {
-            throw AgentRuntimeError.executionFailed(
-                "OpenClaw's Mac node is paired but not connected. Open the OpenClaw app, enable Computer Control, and reconnect this Mac."
-            )
-        }
-
-        guard OpenClawRuntimeAllowlist.canExecuteOnConnectedNode(actionRequest, nodeSnapshot: nodeSnapshot) else {
-            throw AgentRuntimeError.executionFailed(
-                "OpenClaw's Mac node is connected but computer.act is not available."
+        guard let toolInvocation = DexterTool.invocation(from: actionRequest) else {
+            throw AgentRuntimeError.unsupportedAction(
+                "Dexter could not build a tool invocation for this action."
             )
         }
 
         let taskIdentifier = UUID().uuidString
         DexterOpenClawLog.log("task started id=\(taskIdentifier.prefix(8))")
-        DexterOpenClawLog.log("capability=computer.act")
-        DexterOpenClawLog.log("execution started")
-
-        currentExecutionStatus = .queued
-        currentExecutionStatus = .running
-
-        let executionIdentifier = UUID().uuidString
-        DexterOpenClawLog.log("executionId=\(executionIdentifier.prefix(8))")
-
-        let invokeResult: OpenClawNodeInvokeResult
-        switch actionRequest.actionIdentifier {
-        case DexterActionType.openApplication.rawValue:
-            invokeResult = try await invokeApplicationLifecycleAction(
-                actionRequest,
-                nodeIdentifier: nodeSnapshot.nodeIdentifier,
-                executionIdentifier: executionIdentifier,
-                openClawActionName: "launch_app"
-            )
-        case DexterActionType.focusApplication.rawValue:
-            invokeResult = try await invokeApplicationLifecycleAction(
-                actionRequest,
-                nodeIdentifier: nodeSnapshot.nodeIdentifier,
-                executionIdentifier: executionIdentifier,
-                openClawActionName: "launch_app"
-            )
-        case DexterActionType.quitApplication.rawValue:
-            invokeResult = try await invokeApplicationLifecycleAction(
-                actionRequest,
-                nodeIdentifier: nodeSnapshot.nodeIdentifier,
-                executionIdentifier: executionIdentifier,
-                openClawActionName: "kill_app"
-            )
-        default:
-            throw AgentRuntimeError.unsupportedAction(
-                "Dexter does not map this action to an OpenClaw node command yet."
-            )
+        if let capability = toolInvocation.toolKind.requiredOpenClawCapability {
+            DexterOpenClawLog.log("capability=\(capability.rawValue)")
+        } else {
+            DexterOpenClawLog.log("capability=local_mac")
         }
 
-        DexterOpenClawLog.log("execution result=\(invokeResult.ok ? "ok" : "failed")")
+        let gatewayOutcome = await toolRegistryGateway.execute(proposal: toolProposal)
 
-        if invokeResult.ok {
-            currentExecutionStatus = .succeeded
+        switch gatewayOutcome {
+        case .dispatchSucceeded(let runtimeTaskIdentifier, let rawOutput):
+            DexterOpenClawLog.log("execution result=ok")
             DexterOpenClawLog.log("task completed")
-            let applicationName = actionRequest.parameters["applicationName"] ?? "the application"
-            let successMessage = successMessage(
-                for: actionRequest.actionIdentifier,
-                applicationName: applicationName
-            )
             return AgentActionResult(
                 reportedSuccess: true,
-                message: successMessage,
+                message: dispatchMessage(for: toolInvocation),
                 executionStatus: .succeeded,
-                runtimeTaskIdentifier: executionIdentifier,
-                rawOutput: invokeResult.combinedOutput
+                runtimeTaskIdentifier: runtimeTaskIdentifier,
+                rawOutput: rawOutput
+            )
+
+        case .dispatchFailed(let message, let rawOutput):
+            DexterOpenClawLog.log("execution result=failed")
+            DexterOpenClawLog.log("task completed")
+            return AgentActionResult(
+                reportedSuccess: false,
+                message: message,
+                executionStatus: .failed,
+                runtimeTaskIdentifier: nil,
+                rawOutput: rawOutput
+            )
+
+        case .unavailable(let reason):
+            throw AgentRuntimeError.executionFailed(unavailableMessage(for: reason))
+
+        case .cancelled(let message):
+            return AgentActionResult(
+                reportedSuccess: false,
+                message: message,
+                executionStatus: .cancelled,
+                runtimeTaskIdentifier: nil,
+                rawOutput: nil
             )
         }
-
-        currentExecutionStatus = .failed
-        let failureMessage = invokeResult.errorMessage
-            ?? invokeResult.combinedOutput.nonEmptyTrimmedValue
-            ?? "OpenClaw node invoke failed."
-        DexterOpenClawLog.log("task completed")
-        return AgentActionResult(
-            reportedSuccess: false,
-            message: failureMessage,
-            executionStatus: .failed,
-            runtimeTaskIdentifier: executionIdentifier,
-            rawOutput: invokeResult.combinedOutput
-        )
     }
 
     func cancelCurrentAction() async -> AgentActionCancellationResult {
-        nodeInvokeClient.cancelRunningInvoke()
-        if currentExecutionStatus == .running || currentExecutionStatus == .queued {
-            currentExecutionStatus = .cancelled
-            DexterOpenClawLog.log("task cancelled")
-            return AgentActionCancellationResult(
-                didCancel: true,
-                message: "Requested cancellation for the running OpenClaw node invoke."
-            )
-        }
-
+        let cancellation = await toolRegistryGateway.cancelInFlightExecution()
         return AgentActionCancellationResult(
-            didCancel: false,
-            message: "OpenClaw has no running action to cancel."
+            didCancel: cancellation.didCancel,
+            message: cancellation.message
         )
     }
 
-    private func invokeApplicationLifecycleAction(
-        _ actionRequest: AgentActionRequest,
-        nodeIdentifier: String,
-        executionIdentifier: String,
-        openClawActionName: String
-    ) async throws -> OpenClawNodeInvokeResult {
-        let applicationName = actionRequest.parameters["applicationName"] ?? ""
-        let parametersJSON: String
-        switch openClawActionName {
-        case "kill_app":
-            parametersJSON = OpenClawComputerActRequestBuilder.killApplicationParametersJSON(
-                applicationName: applicationName,
-                executionIdentifier: executionIdentifier
-            )
-        default:
-            parametersJSON = OpenClawComputerActRequestBuilder.launchApplicationParametersJSON(
-                applicationName: applicationName,
-                executionIdentifier: executionIdentifier
-            )
+    private func dispatchMessage(for toolInvocation: DexterToolInvocation) -> String {
+        if let capability = toolInvocation.toolKind.requiredOpenClawCapability {
+            return "OpenClaw dispatched \(toolInvocation.actionIdentifier) through \(capability.rawValue)."
         }
-
-        return try await OpenClawComputerActExecutor.performComputerAct(
-            nodeIdentifier: nodeIdentifier,
-            nodeInvokeClient: nodeInvokeClient,
-            parametersJSON: parametersJSON,
-            executionIdentifier: executionIdentifier
-        )
+        return "Dexter dispatched \(toolInvocation.actionIdentifier) through the local registered-tool runtime."
     }
 
-    private func successMessage(for actionIdentifier: String, applicationName: String) -> String {
-        switch actionIdentifier {
-        case DexterActionType.quitApplication.rawValue:
-            return "OpenClaw sent quit \(applicationName) through computer.act."
-        case DexterActionType.focusApplication.rawValue:
-            return "OpenClaw focused \(applicationName) through computer.act."
-        default:
-            return "OpenClaw opened \(applicationName) through computer.act."
+    private func unavailableMessage(for reason: DexterToolGatewayUnavailableReason) -> String {
+        switch reason {
+        case .openClawNotInstalled:
+            return "OpenClaw is not installed on this Mac."
+        case .gatewayDisconnected:
+            return "OpenClaw gateway is not connected."
+        case .nodeNotPaired:
+            return "OpenClaw has no paired Mac node. Pair this Mac in OpenClaw before running tools."
+        case .nodeDisconnected:
+            return "OpenClaw's Mac node is paired but not connected. Reconnect Computer Control in OpenClaw."
+        case .capabilityMissing(let capability):
+            return "OpenClaw's Mac node does not expose \(capability.rawValue)."
+        case .permissionDenied(let detail):
+            return detail
+        case .unsupportedTool(let actionIdentifier):
+            return "Dexter does not support OpenClaw execution for \(actionIdentifier)."
         }
-    }
-}
-
-private extension String {
-    var nonEmptyTrimmedValue: String? {
-        let trimmedValue = trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmedValue.isEmpty ? nil : trimmedValue
     }
 }

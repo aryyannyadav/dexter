@@ -53,6 +53,10 @@ struct leanring_buddyTests {
         coordinator.handleUserInterruption()
         #expect(coordinator.interactionState == .idle)
 
+        coordinator.transitionToSpeaking()
+        coordinator.prepareForPushToTalkCapture()
+        #expect(coordinator.interactionState == .idle)
+
         coordinator.appendStreamingResponseChunk("hello ")
         coordinator.appendStreamingResponseChunk("world")
         #expect(coordinator.streamingResponseText == "hello world")
@@ -112,26 +116,19 @@ struct leanring_buddyTests {
         let storageURL = temporaryDirectory.appendingPathComponent("memory.json")
 
         let persistentMemoryStore = PersistentMemoryStore(storageURL: storageURL)
-        persistentMemoryStore.appendEntry(
-            DexterMemoryEntry(
-                kind: .rememberedFact,
-                title: "API key location",
+        persistentMemoryStore.appendMemory(
+            DexterStructuredMemoryRecord.explicitSemantic(
                 content: "Keys live in the worker secrets.",
-                provenance: .explicitUserRequest
+                title: "API key location"
             )
         )
-        persistentMemoryStore.appendEntry(
-            DexterMemoryEntry(
-                kind: .userPreference,
-                title: "Voice",
-                content: "Speak briefly.",
-                provenance: .intentionalPreference
-            )
+        persistentMemoryStore.appendMemory(
+            DexterStructuredMemoryRecord.explicitPreference(content: "Speak briefly.", title: "Voice")
         )
 
         let reloadedStore = PersistentMemoryStore(storageURL: storageURL)
-        #expect(reloadedStore.allEntries().count == 2)
-        #expect(reloadedStore.entries(kind: .rememberedFact).first?.content.contains("worker secrets") == true)
+        #expect(reloadedStore.allMemories().count == 2)
+        #expect(reloadedStore.activeMemories().first?.content.contains("worker secrets") == true)
     }
 
     @Test func memoryIntentProcessorOnlyStoresExplicitRememberAndTaskIntents() async throws {
@@ -391,6 +388,7 @@ struct leanring_buddyTests {
             pointerElementTitle: nil,
             pointerElementRoleDescription: nil,
             pointerElementValueDescription: nil,
+            browserState: .empty,
             hasAccessibilityObservation: true,
             observedAt: Date()
         )
@@ -459,7 +457,9 @@ struct leanring_buddyTests {
                     spokenSummary: "unused",
                     pendingConfirmation: nil,
                     verificationReport: nil,
-                    turnRecord: nil
+                    turnRecord: nil,
+                    executionSnapshot: nil,
+                    recoveryMetadata: nil
                 )
             }
         )
@@ -475,7 +475,9 @@ struct leanring_buddyTests {
                     spokenSummary: "unused",
                     pendingConfirmation: nil,
                     verificationReport: nil,
-                    turnRecord: nil
+                    turnRecord: nil,
+                    executionSnapshot: nil,
+                    recoveryMetadata: nil
                 )
             }
         )
@@ -560,6 +562,7 @@ struct leanring_buddyTests {
             pointerElementTitle: nil,
             pointerElementRoleDescription: nil,
             pointerElementValueDescription: nil,
+            browserState: .empty,
             hasAccessibilityObservation: true,
             observedAt: Date()
         )
@@ -613,6 +616,7 @@ struct leanring_buddyTests {
             pointerElementTitle: nil,
             pointerElementRoleDescription: nil,
             pointerElementValueDescription: nil,
+            browserState: .empty,
             hasAccessibilityObservation: true,
             observedAt: Date()
         )
@@ -641,6 +645,7 @@ struct leanring_buddyTests {
             pointerElementTitle: nil,
             pointerElementRoleDescription: nil,
             pointerElementValueDescription: nil,
+            browserState: .empty,
             hasAccessibilityObservation: true,
             observedAt: Date()
         )
@@ -651,6 +656,7 @@ struct leanring_buddyTests {
             pointerElementTitle: nil,
             pointerElementRoleDescription: nil,
             pointerElementValueDescription: nil,
+            browserState: .empty,
             hasAccessibilityObservation: true,
             observedAt: Date()
         )
@@ -666,7 +672,7 @@ struct leanring_buddyTests {
                 rawOutput: nil
             )
         )
-        #expect(report.status == .notVerified)
+        #expect(report.status == .unavailable)
     }
 
     @Test func safeRetryPolicyAllowsOpenApplicationButNotClick() async throws {
@@ -721,7 +727,39 @@ struct leanring_buddyTests {
             )
         )
         #expect(report.status == .verified)
-        #expect(report.summary.contains("closed"))
+        #expect(report.summary.contains("no longer running"))
+    }
+
+    @Test @MainActor func quitApplicationVerificationFailsWhenProcessStillRunningDespiteRuntimeSuccess() async throws {
+        let action = DexterActionFactory.quitApplication(named: "SampleTargetApplication")
+        let probe = ConfigurableDexterApplicationLifecycleVerificationProbe()
+        probe.signalsByApplicationName["SampleTargetApplication"] = DexterOpenApplicationVerificationSignals(
+            isApplicationRunning: true,
+            isApplicationFrontmost: false,
+            hasVisibleWindow: true,
+            observedRunningApplicationName: "SampleTargetApplication",
+            observedRunningBundleIdentifier: "com.example.sampletarget"
+        )
+        let originalProbe = DexterActionVerificationEngine.applicationLifecycleProbe
+        DexterActionVerificationEngine.applicationLifecycleProbe = probe
+        defer { DexterActionVerificationEngine.applicationLifecycleProbe = originalProbe }
+
+        let report = DexterActionVerificationEngine.verify(
+            action: action,
+            observationBefore: .empty,
+            observationAfter: .empty,
+            executionResult: AgentActionResult(
+                reportedSuccess: true,
+                message: "OpenClaw dispatch ok",
+                executionStatus: .succeeded,
+                runtimeTaskIdentifier: "task",
+                rawOutput: "ok"
+            )
+        )
+        #expect(report.status == .failed)
+        #expect(report.summary.contains("Verification failed"))
+        #expect(report.summary.contains("still running"))
+        #expect(report.evidence.contains("process_running=true"))
     }
 
     @Test @MainActor func realOpenCalculatorVerificationAfterWorkspaceLaunch() async throws {
@@ -910,7 +948,8 @@ struct leanring_buddyTests {
             includeRecentConversationInPrompt: false,
             includeRecentConversationInAPIHistory: true,
             includeCurrentTask: false,
-            includePersistentMemory: false
+            includePersistentMemory: false,
+            includePersonalContextGraph: false
         )
         let adjusted = DexterTeachingModeContextAdjuster.adjust(
             plan: basePlan,
@@ -1152,6 +1191,7 @@ struct leanring_buddyTests {
             pointerElementTitle: nil,
             pointerElementRoleDescription: nil,
             pointerElementValueDescription: nil,
+            browserState: .empty,
             hasAccessibilityObservation: true,
             observedAt: Date()
         )
@@ -1171,7 +1211,7 @@ struct leanring_buddyTests {
             )
         )
 
-        #expect(report.status == .notVerified)
+        #expect(report.status == .unavailable)
     }
 
     @Test func workerProxyClientAppliesOptionalAuthenticationHeader() async throws {
@@ -1199,12 +1239,12 @@ struct leanring_buddyTests {
     @Test func verificationUncertainDoesNotMarkActionCompleted() async throws {
         let verifier = StubActionVerifier()
         verifier.nextOutcome = ActionVerificationOutcome(
-            status: .notVerified,
+            status: .unavailable,
             summary: "Could not confirm the UI change.",
             report: DexterActionVerificationReport(
-                status: .notVerified,
+                status: .unavailable,
                 summary: "Could not confirm the UI change.",
-                intendedStateDescription: "test",
+                expectedStateDescription: "test",
                 observedStateDescription: "test"
             )
         )

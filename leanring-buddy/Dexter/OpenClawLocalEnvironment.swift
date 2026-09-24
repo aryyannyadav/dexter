@@ -5,8 +5,12 @@
 
 import Foundation
 
+protocol OpenClawLocalEnvironmentProviding {
+    var openClawExecutableURL: URL? { get }
+}
+
 /// Resolves the bundled OpenClaw CLI inside `OpenClaw.app` and prepares a PATH that includes its Node runtime.
-struct OpenClawLocalEnvironment {
+struct OpenClawLocalEnvironment: OpenClawLocalEnvironmentProviding {
     let openClawApplicationURL: URL
     let fileManager: FileManager
 

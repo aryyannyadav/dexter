@@ -19,22 +19,38 @@ enum DexterOpenApplicationVerification {
     @MainActor
     static func signals(forApplicationName intendedApplicationName: String) -> DexterOpenApplicationVerificationSignals {
         let runningApplicationMatch = matchingRunningApplication(named: intendedApplicationName)
+        let bundleMatchedRunningApplication = runningApplicationMatch
+            ?? runningApplicationMatchingInstalledBundle(named: intendedApplicationName)
+
         let frontmostApplication = NSWorkspace.shared.frontmostApplication
         let isFrontmost = applicationNamesMatch(
             intendedName: intendedApplicationName,
             runningApplication: frontmostApplication
         )
 
-        let bundleIdentifier = runningApplicationMatch?.bundleIdentifier
+        let bundleIdentifier = bundleMatchedRunningApplication?.bundleIdentifier
         let hasVisibleWindow = bundleIdentifier.map { hasOnScreenWindow(forBundleIdentifier: $0) } ?? false
+        let isApplicationRunning = bundleMatchedRunningApplication != nil
+            && bundleMatchedRunningApplication?.isTerminated == false
 
         return DexterOpenApplicationVerificationSignals(
-            isApplicationRunning: runningApplicationMatch != nil,
+            isApplicationRunning: isApplicationRunning,
             isApplicationFrontmost: isFrontmost,
             hasVisibleWindow: hasVisibleWindow,
-            observedRunningApplicationName: runningApplicationMatch?.localizedName,
+            observedRunningApplicationName: bundleMatchedRunningApplication?.localizedName,
             observedRunningBundleIdentifier: bundleIdentifier
         )
+    }
+
+    @MainActor
+    private static func runningApplicationMatchingInstalledBundle(named intendedApplicationName: String) -> NSRunningApplication? {
+        guard let applicationURL = DexterInstalledApplicationLauncher.resolveApplicationURL(named: intendedApplicationName),
+              let bundleIdentifier = Bundle(url: applicationURL)?.bundleIdentifier else {
+            return nil
+        }
+
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+            .first(where: { !$0.isTerminated })
     }
 
     @MainActor

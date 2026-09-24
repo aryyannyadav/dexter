@@ -10,4 +10,5 @@ struct DexterPendingActionExecution: Equatable {
     let context: DexterContext
     let hasPersistedScreenContentGrant: Bool
     let confirmationContent: DexterActionConfirmationContent
+    let executionIdentifier: UUID?
 }

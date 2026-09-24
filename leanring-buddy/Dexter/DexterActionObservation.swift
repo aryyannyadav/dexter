@@ -14,6 +14,7 @@ struct DexterActionObservationSnapshot: Equatable {
     let pointerElementTitle: String?
     let pointerElementRoleDescription: String?
     let pointerElementValueDescription: String?
+    let browserState: DexterBrowserStateSnapshot
     let hasAccessibilityObservation: Bool
     let observedAt: Date
 
@@ -24,12 +25,21 @@ struct DexterActionObservationSnapshot: Equatable {
         pointerElementTitle: nil,
         pointerElementRoleDescription: nil,
         pointerElementValueDescription: nil,
+        browserState: .empty,
         hasAccessibilityObservation: false,
         observedAt: .distantPast
     )
 
     static func from(context: DexterContext) -> DexterActionObservationSnapshot {
         let hint = context.attention.accessibilityHintAtPointer
+        let browserState = DexterBrowserStateCollector.collect(
+            activeApplication: context.activeApplication,
+            activeWindow: context.activeWindow,
+            selectedText: context.selectedText,
+            browserContext: nil,
+            currentTaskDescription: context.currentTask.currentTaskDescription,
+            pointerSemanticTargetLabel: context.pointer?.semanticTarget?.primaryLabel
+        )
         return DexterActionObservationSnapshot(
             activeApplicationBundleIdentifier: context.activeApplication.bundleIdentifier,
             activeApplicationLocalizedName: context.activeApplication.localizedName,
@@ -37,6 +47,7 @@ struct DexterActionObservationSnapshot: Equatable {
             pointerElementTitle: hint.title,
             pointerElementRoleDescription: hint.roleDescription,
             pointerElementValueDescription: hint.valueDescription,
+            browserState: browserState,
             hasAccessibilityObservation: context.activeApplication.availability == .available,
             observedAt: Date()
         )
@@ -66,6 +77,18 @@ final class MacDexterActionContextObserver: DexterActionContextObserver {
             pointerLocationInScreenSpace: pointerLocationInScreenSpace
         )
 
+        let browserState = DexterBrowserStateCollector.collect(
+            activeApplication: environment.activeApplication,
+            activeWindow: environment.activeWindow,
+            selectedText: environment.selectedText,
+            browserContext: DexterBrowserContextCollector.collect(
+                activeApplication: environment.activeApplication,
+                activeWindow: environment.activeWindow
+            ),
+            currentTaskDescription: nil,
+            pointerSemanticTargetLabel: hint.title
+        )
+
         return DexterActionObservationSnapshot(
             activeApplicationBundleIdentifier: environment.activeApplication.bundleIdentifier,
             activeApplicationLocalizedName: environment.activeApplication.localizedName,
@@ -73,6 +96,7 @@ final class MacDexterActionContextObserver: DexterActionContextObserver {
             pointerElementTitle: hint.title,
             pointerElementRoleDescription: hint.roleDescription,
             pointerElementValueDescription: hint.valueDescription,
+            browserState: browserState,
             hasAccessibilityObservation: environment.activeApplication.availability == .available,
             observedAt: Date()
         )

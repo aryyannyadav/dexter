@@ -1,0 +1,301 @@
+//
+//  DexterOpenClawToolGatewayTests.swift
+//  leanring-buddyTests
+//
+
+import Foundation
+import Testing
+@testable import leanring_buddy
+
+struct StubOpenClawLocalEnvironment: OpenClawLocalEnvironmentProviding {
+    let openClawExecutableURL: URL?
+}
+
+@MainActor
+final class StubOpenClawHealthMonitor: OpenClawHealthMonitoring {
+    var connectionState: OpenClawGatewayConnectionState = .disconnected
+    var preferredNodeSnapshot: OpenClawNodeCapabilitySnapshot = .unavailable
+
+    func refreshHealthIfNeeded(force: Bool) async {}
+}
+
+@MainActor
+final class MockOpenClawNodeInvokeClient: OpenClawNodeInvoking {
+    var invokedNodeIdentifier: String?
+    var invokedCommand: String?
+    var invokedParametersJSON: String?
+    var allInvokedParametersJSON: [String] = []
+    var nextResult: OpenClawNodeInvokeResult = OpenClawNodeInvokeResult(ok: true, errorMessage: nil, combinedOutput: "")
+    var shouldThrowCancellation = false
+
+    func invoke(
+        nodeIdentifier: String,
+        command: String,
+        parametersJSON: String,
+        invokeTimeoutMilliseconds: Int = 60_000
+    ) async throws -> OpenClawNodeInvokeResult {
+        invokedNodeIdentifier = nodeIdentifier
+        invokedCommand = command
+        invokedParametersJSON = parametersJSON
+        allInvokedParametersJSON.append(parametersJSON)
+        if shouldThrowCancellation {
+            throw CancellationError()
+        }
+        return nextResult
+    }
+
+    func cancelRunningInvoke() {}
+}
+
+struct DexterOpenClawToolGatewayTests {
+    private static let connectedNodeSnapshot = OpenClawNodeCapabilitySnapshot(
+        nodeIdentifier: "node-abc",
+        displayName: "Test Mac",
+        isPaired: true,
+        isConnected: true,
+        advertisedCommands: ["computer.act", "screen.snapshot", "browser.proxy", "system.run"],
+        permissions: OpenClawNodePermissionSnapshot(
+            accessibilityGranted: true,
+            screenRecordingGranted: true,
+            automationGranted: true
+        )
+    )
+
+    @Test func capabilityDiscoveryMarksAdvertisedCommands() {
+        let report = DexterOpenClawCapabilityDiscovery.report(
+            gatewayConnected: true,
+            nodeSnapshot: Self.connectedNodeSnapshot
+        )
+        #expect(report.gatewayConnected)
+        #expect(report.nodeConnected)
+        #expect(report.isCapabilityAvailable(.computerAct))
+        #expect(report.isCapabilityAvailable(.screenSnapshot))
+        #expect(report.isCapabilityAvailable(.browserProxy))
+        #expect(report.isCapabilityAvailable(.systemRun))
+    }
+
+    @Test func capabilityDiscoveryReportsDisconnectedNode() {
+        let disconnectedSnapshot = OpenClawNodeCapabilitySnapshot(
+            nodeIdentifier: "node-abc",
+            displayName: "Test Mac",
+            isPaired: true,
+            isConnected: false,
+            advertisedCommands: ["computer.act"],
+            permissions: Self.connectedNodeSnapshot.permissions
+        )
+        let report = DexterOpenClawCapabilityDiscovery.report(
+            gatewayConnected: true,
+            nodeSnapshot: disconnectedSnapshot
+        )
+        #expect(!report.isCapabilityAvailable(.computerAct))
+    }
+
+    @Test func capabilityDiscoveryReportsMissingCommand() {
+        let snapshot = OpenClawNodeCapabilitySnapshot(
+            nodeIdentifier: "node-abc",
+            displayName: nil,
+            isPaired: true,
+            isConnected: true,
+            advertisedCommands: ["screen.snapshot"],
+            permissions: Self.connectedNodeSnapshot.permissions
+        )
+        let report = DexterOpenClawCapabilityDiscovery.report(
+            gatewayConnected: true,
+            nodeSnapshot: snapshot
+        )
+        #expect(!report.isCapabilityAvailable(.computerAct))
+        #expect(report.isCapabilityAvailable(.screenSnapshot))
+    }
+
+    @Test @MainActor func gatewayReturnsUnavailableWhenNodeDisconnected() async {
+        let healthMonitor = StubOpenClawHealthMonitor()
+        healthMonitor.connectionState = .connected
+        healthMonitor.preferredNodeSnapshot = OpenClawNodeCapabilitySnapshot(
+            nodeIdentifier: "node-abc",
+            displayName: nil,
+            isPaired: true,
+            isConnected: false,
+            advertisedCommands: ["computer.act"],
+            permissions: Self.connectedNodeSnapshot.permissions
+        )
+
+        let gateway = Self.makeGateway(healthMonitor: healthMonitor, invokeClient: MockOpenClawNodeInvokeClient())
+
+        let outcome = await gateway.execute(
+            toolInvocation: DexterToolInvocation(
+                toolKind: .launchApplication,
+                actionIdentifier: DexterActionType.openApplication.rawValue,
+                parameters: ["applicationName": "SampleApp"]
+            )
+        )
+
+        guard case .unavailable(.nodeDisconnected) = outcome else {
+            Issue.record("Expected nodeDisconnected unavailable state.")
+            return
+        }
+    }
+
+    @Test @MainActor func gatewayReturnsUnavailableWhenCapabilityMissing() async {
+        let healthMonitor = StubOpenClawHealthMonitor()
+        healthMonitor.connectionState = .connected
+        healthMonitor.preferredNodeSnapshot = OpenClawNodeCapabilitySnapshot(
+            nodeIdentifier: "node-abc",
+            displayName: nil,
+            isPaired: true,
+            isConnected: true,
+            advertisedCommands: ["computer.act"],
+            permissions: Self.connectedNodeSnapshot.permissions
+        )
+
+        let gateway = Self.makeGateway(healthMonitor: healthMonitor, invokeClient: MockOpenClawNodeInvokeClient())
+
+        let outcome = await gateway.execute(
+            toolInvocation: DexterToolInvocation(
+                toolKind: .browserInteraction,
+                actionIdentifier: DexterActionType.openURL.rawValue,
+                parameters: ["url": "https://example.com"]
+            )
+        )
+
+        guard case .unavailable(.capabilityMissing(.browserProxy)) = outcome else {
+            Issue.record("Expected browser.proxy capability missing.")
+            return
+        }
+    }
+
+    @Test @MainActor func gatewayDispatchesLaunchApplicationThroughComputerAct() async {
+        let healthMonitor = StubOpenClawHealthMonitor()
+        healthMonitor.connectionState = .connected
+        healthMonitor.preferredNodeSnapshot = Self.connectedNodeSnapshot
+
+        let invokeClient = MockOpenClawNodeInvokeClient()
+        let gateway = Self.makeGateway(healthMonitor: healthMonitor, invokeClient: invokeClient)
+
+        let outcome = await gateway.execute(
+            toolInvocation: DexterToolInvocation(
+                toolKind: .launchApplication,
+                actionIdentifier: DexterActionType.openApplication.rawValue,
+                parameters: ["applicationName": "SampleApp"]
+            )
+        )
+
+        guard case .dispatchSucceeded = outcome else {
+            Issue.record("Expected dispatch success.")
+            return
+        }
+        #expect(invokeClient.invokedCommand == "computer.act")
+        #expect(invokeClient.allInvokedParametersJSON.contains(where: { $0.contains("\"action\":\"launch_app\"") }))
+        #expect(invokeClient.allInvokedParametersJSON.contains(where: { $0.contains("\"app\":\"SampleApp\"") }))
+    }
+
+    @Test @MainActor func gatewayReturnsDispatchFailureFromNode() async {
+        let healthMonitor = StubOpenClawHealthMonitor()
+        healthMonitor.connectionState = .connected
+        healthMonitor.preferredNodeSnapshot = Self.connectedNodeSnapshot
+
+        let invokeClient = MockOpenClawNodeInvokeClient()
+        invokeClient.nextResult = OpenClawNodeInvokeResult(
+            ok: false,
+            errorMessage: "node rejected action",
+            combinedOutput: "failed"
+        )
+
+        let gateway = Self.makeGateway(healthMonitor: healthMonitor, invokeClient: invokeClient)
+
+        let outcome = await gateway.execute(
+            toolInvocation: DexterToolInvocation(
+                toolKind: .quitApplication,
+                actionIdentifier: DexterActionType.quitApplication.rawValue,
+                parameters: ["applicationName": "SampleApp"]
+            )
+        )
+
+        guard case .dispatchFailed(let message, _) = outcome else {
+            Issue.record("Expected dispatch failure.")
+            return
+        }
+        #expect(message.contains("node rejected action"))
+    }
+
+    @Test @MainActor func gatewayReturnsCancelledOutcome() async {
+        let healthMonitor = StubOpenClawHealthMonitor()
+        healthMonitor.connectionState = .connected
+        healthMonitor.preferredNodeSnapshot = Self.connectedNodeSnapshot
+
+        let invokeClient = MockOpenClawNodeInvokeClient()
+        invokeClient.shouldThrowCancellation = true
+
+        let gateway = Self.makeGateway(healthMonitor: healthMonitor, invokeClient: invokeClient)
+
+        let outcome = await gateway.execute(
+            toolInvocation: DexterToolInvocation(
+                toolKind: .click,
+                actionIdentifier: DexterActionType.click.rawValue,
+                parameters: ["x": "10", "y": "20"]
+            )
+        )
+
+        guard case .cancelled = outcome else {
+            Issue.record("Expected cancelled outcome.")
+            return
+        }
+    }
+
+    @Test func toolMapperBuildsGenericApplicationLifecyclePlans() {
+        let launchPlan = OpenClawDexterToolInvokePlanner.plan(
+            toolInvocation: DexterToolInvocation(
+                toolKind: .launchApplication,
+                actionIdentifier: DexterActionType.openApplication.rawValue,
+                parameters: ["applicationName": "SampleApp"]
+            ),
+            executionIdentifier: "exec-1"
+        )
+        #expect(launchPlan?.nodeCommand == "computer.act")
+        #expect(launchPlan?.parametersJSON.contains("launch_app") == true)
+
+        let quitPlan = OpenClawDexterToolInvokePlanner.plan(
+            toolInvocation: DexterToolInvocation(
+                toolKind: .quitApplication,
+                actionIdentifier: DexterActionType.quitApplication.rawValue,
+                parameters: ["applicationName": "SampleApp"]
+            ),
+            executionIdentifier: "exec-2"
+        )
+        #expect(quitPlan?.parametersJSON.contains("kill_app") == true)
+    }
+
+    @MainActor
+    private static func makeGateway(
+        healthMonitor: StubOpenClawHealthMonitor,
+        invokeClient: MockOpenClawNodeInvokeClient
+    ) -> OpenClawDexterToolGatewayAdapter {
+        let stubExecutableURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dexter-openclaw-stub-\(UUID().uuidString)")
+        try? Data().write(to: stubExecutableURL)
+        return OpenClawDexterToolGatewayAdapter(
+            localEnvironment: StubOpenClawLocalEnvironment(openClawExecutableURL: stubExecutableURL),
+            healthMonitor: healthMonitor,
+            nodeInvokeClient: invokeClient
+        )
+    }
+
+    @Test func capabilityDiscoveryReportsPermissionDeniedForComputerAct() {
+        let snapshot = OpenClawNodeCapabilitySnapshot(
+            nodeIdentifier: "node-abc",
+            displayName: nil,
+            isPaired: true,
+            isConnected: true,
+            advertisedCommands: ["computer.act"],
+            permissions: OpenClawNodePermissionSnapshot(
+                accessibilityGranted: false,
+                screenRecordingGranted: true,
+                automationGranted: false
+            )
+        )
+        let report = DexterOpenClawCapabilityDiscovery.report(
+            gatewayConnected: true,
+            nodeSnapshot: snapshot
+        )
+        #expect(!report.isCapabilityAvailable(.computerAct))
+    }
+}

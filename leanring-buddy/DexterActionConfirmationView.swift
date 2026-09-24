@@ -28,6 +28,9 @@ struct DexterActionConfirmationView: View {
                 confirmationRow(title: "What", body: presentation.content.whatWillHappen)
                 confirmationRow(title: "Why", body: presentation.content.whyDexterWantsToDoIt)
                 confirmationRow(title: "Where", body: presentation.content.whereItWillHappen)
+                if let recoveryWarning = presentation.content.recoveryWarning?.nonEmptyTrimmedValue {
+                    confirmationRow(title: "Recovery", body: recoveryWarning)
+                }
 
                 HStack(spacing: 10) {
                     Button("Cancel", action: onCancel)

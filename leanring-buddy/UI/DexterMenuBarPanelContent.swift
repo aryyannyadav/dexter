@@ -26,8 +26,12 @@ struct DexterMenuBarPanelContent: View {
                 VStack(alignment: .leading, spacing: 14) {
                     if !companionManager.allPermissionsGranted {
                         permissionsBlock
+                    } else if companionManager.interactiveOnboardingStore.isActive {
+                        DexterInteractiveOnboardingCard(
+                            interactiveOnboardingStore: companionManager.interactiveOnboardingStore
+                        )
                     } else if companionManager.hasCompletedOnboarding {
-                        DexterDemonstrationPhaseBanner(phaseStore: companionManager.dexterDemonstrationPhaseStore)
+                        DexterRuntimeUIStateBanner(runtimeUIStateStore: companionManager.dexterRuntimeUIStateStore)
                         contextRow
                         voiceRow
                         quickCompose
