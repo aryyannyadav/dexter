@@ -14,10 +14,13 @@ struct DexterActionPermissionSettings: Equatable {
 
 protocol DexterActionPermissionSettingsStore: AnyObject {
     var currentSettings: DexterActionPermissionSettings { get set }
+    /// Session-only: user approved computer control once; cleared on app quit (not persisted).
+    var isComputerControlAuthorizedForSession: Bool { get set }
 }
 
 final class InMemoryDexterActionPermissionSettingsStore: DexterActionPermissionSettingsStore {
     var currentSettings: DexterActionPermissionSettings
+    var isComputerControlAuthorizedForSession: Bool = false
 
     init(currentSettings: DexterActionPermissionSettings = .default) {
         self.currentSettings = currentSettings
@@ -27,6 +30,7 @@ final class InMemoryDexterActionPermissionSettingsStore: DexterActionPermissionS
 final class UserDefaultsDexterActionPermissionSettingsStore: DexterActionPermissionSettingsStore {
     private let userDefaults: UserDefaults
     private let autoApproveLowRiskActionsKey = "dexter.actionPermission.autoApproveLowRiskActions"
+    var isComputerControlAuthorizedForSession: Bool = false
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults

@@ -100,8 +100,7 @@ final class OpenClawAgentRuntimeAdapter: AgentRuntime {
         else {
             return false
         }
-        let nodeSnapshot = healthMonitor.preferredNodeSnapshot
-        return nodeSnapshot.isConnected && nodeSnapshot.hasComputerActCommand
+        return healthMonitor.preferredNodeSnapshot.isConnected
     }
 
     func executeAction(_ actionRequest: AgentActionRequest) async throws -> AgentActionResult {
@@ -151,11 +150,24 @@ final class OpenClawAgentRuntimeAdapter: AgentRuntime {
             )
 
         case .dispatchFailed(let message, let rawOutput):
-            DexterOpenClawLog.log("execution result=failed")
+            let structuredFailureCode = DexterOpenClawStructuredFailureParser.failureCode(
+                fromMessage: message,
+                rawOutput: rawOutput
+            )
+            if let structuredFailureCode {
+                DexterOpenClawLog.log("execution result=failed code=\(structuredFailureCode.rawValue)")
+            } else {
+                DexterOpenClawLog.log("execution result=failed")
+            }
             DexterOpenClawLog.log("task completed")
+            let userFacingMessage = DexterOpenClawExecutionFailureMessage.userFacingMessage(
+                actionRequest: actionRequest,
+                gatewayMessage: message,
+                structuredFailureCode: structuredFailureCode
+            )
             return AgentActionResult(
                 reportedSuccess: false,
-                message: message,
+                message: userFacingMessage,
                 executionStatus: .failed,
                 runtimeTaskIdentifier: nil,
                 rawOutput: rawOutput
@@ -185,27 +197,37 @@ final class OpenClawAgentRuntimeAdapter: AgentRuntime {
 
     private func dispatchMessage(for toolInvocation: DexterToolInvocation) -> String {
         if let capability = toolInvocation.toolKind.requiredOpenClawCapability {
-            return "OpenClaw dispatched \(toolInvocation.actionIdentifier) through \(capability.rawValue)."
+            return "Dexter sent \(toolInvocation.actionIdentifier) to OpenClaw (\(capability.rawValue)); verifying the result on your Mac."
         }
-        return "Dexter dispatched \(toolInvocation.actionIdentifier) through the local registered-tool runtime."
+        return "Dexter sent \(toolInvocation.actionIdentifier) to the local tool runtime; verifying the result."
     }
 
     private func unavailableMessage(for reason: DexterToolGatewayUnavailableReason) -> String {
+        let failureCode = DexterOpenClawUserFacingFailure.code(for: reason)
         switch reason {
         case .openClawNotInstalled:
             return "OpenClaw is not installed on this Mac."
         case .gatewayDisconnected:
-            return "OpenClaw gateway is not connected."
-        case .nodeNotPaired:
-            return "OpenClaw has no paired Mac node. Pair this Mac in OpenClaw before running tools."
-        case .nodeDisconnected:
-            return "OpenClaw's Mac node is paired but not connected. Reconnect Computer Control in OpenClaw."
+            return DexterOpenClawUserFacingFailure.message(for: failureCode)
+        case .nodeNotPaired, .nodeDisconnected:
+            return DexterOpenClawUserFacingFailure.message(for: failureCode)
         case .capabilityMissing(let capability):
-            return "OpenClaw's Mac node does not expose \(capability.rawValue)."
+            return DexterOpenClawUserFacingFailure.message(
+                for: failureCode,
+                detail: capability.settingsTitle
+            )
+        case .applicationLifecycleControlUnavailable(let providerLabel):
+            return DexterOpenClawUserFacingFailure.message(
+                for: .computerUnsupportedAction,
+                providerLabel: providerLabel
+            )
         case .permissionDenied(let detail):
-            return detail
+            return DexterOpenClawUserFacingFailure.message(for: .permissionDenied, detail: detail)
         case .unsupportedTool(let actionIdentifier):
-            return "Dexter does not support OpenClaw execution for \(actionIdentifier)."
+            return DexterOpenClawUserFacingFailure.message(
+                for: .unsupportedTool,
+                detail: actionIdentifier
+            )
         }
     }
 }

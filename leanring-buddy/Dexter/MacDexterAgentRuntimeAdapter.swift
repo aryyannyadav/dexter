@@ -72,24 +72,10 @@ final class MacDexterAgentRuntimeAdapter: AgentRuntime {
 
     @MainActor
     private func launchApplication(named applicationName: String) -> Bool {
-        let normalizedName = applicationName.lowercased()
-        if normalizedName.contains("visual studio code") || normalizedName == "vscode" || normalizedName == "code" {
-            let visualStudioCodeURL = URL(fileURLWithPath: "/Applications/Visual Studio Code.app")
-            if FileManager.default.fileExists(atPath: visualStudioCodeURL.path) {
-                return NSWorkspace.shared.open(visualStudioCodeURL)
-            }
-            return NSWorkspace.shared.launchApplication("Visual Studio Code")
-        }
-
-        if normalizedName == "safari" {
-            return NSWorkspace.shared.launchApplication("Safari")
-        }
-
         if DexterInstalledApplicationLauncher.isApplicationInstalled(named: applicationName) {
             return DexterInstalledApplicationLauncher.launchApplication(named: applicationName)
         }
-
-        return false
+        return NSWorkspace.shared.launchApplication(applicationName)
     }
 
     private func executeClick(_ actionRequest: AgentActionRequest) throws -> AgentActionResult {
@@ -198,73 +184,30 @@ enum MacDexterKeyboardPasteUtility {
     }
 }
 
-/// Routes computer actions through OpenClaw when the local node is connected; MacDexter handles allowlisted demo fallbacks.
+/// Routes approved Dexter tools exclusively through the OpenClaw-backed tool gateway (no app-specific Mac fallbacks).
 final class CompositeDexterAgentRuntime: AgentRuntime {
     let runtimeName = "CompositeDexter"
 
-    private let macRuntime: MacDexterAgentRuntimeAdapter
     private let openClawRuntime: OpenClawAgentRuntimeAdapter
 
     private(set) var currentExecutionStatus: AgentActionExecutionStatus = .idle
 
-    init(
-        macRuntime: MacDexterAgentRuntimeAdapter = MacDexterAgentRuntimeAdapter(),
-        openClawRuntime: OpenClawAgentRuntimeAdapter = OpenClawAgentRuntimeAdapter()
-    ) {
-        self.macRuntime = macRuntime
+    init(openClawRuntime: OpenClawAgentRuntimeAdapter = OpenClawAgentRuntimeAdapter()) {
         self.openClawRuntime = openClawRuntime
     }
 
     func isAvailable() -> Bool {
-        macRuntime.isAvailable() || openClawRuntime.isAvailable()
+        openClawRuntime.isAvailable()
     }
 
     func executeAction(_ actionRequest: AgentActionRequest) async throws -> AgentActionResult {
-        if DexterRegisteredToolLocalExecution.isLocallyExecuted(actionRequest) {
-            let result = try await openClawRuntime.executeAction(actionRequest)
-            currentExecutionStatus = openClawRuntime.currentExecutionStatus
-            return result
-        }
-
-        if OpenClawRuntimeAllowlist.prefersOpenClawRuntime(actionRequest),
-           OpenClawRuntimeAllowlist.isDexterSupportedAction(actionRequest) {
-            if openClawRuntime.isAvailable() {
-                let result = try await openClawRuntime.executeAction(actionRequest)
-                currentExecutionStatus = openClawRuntime.currentExecutionStatus
-                return result
-            }
-
-            if MacDexterRuntimeAllowlist.isSupported(actionRequest) {
-                let result = try await macRuntime.executeAction(actionRequest)
-                currentExecutionStatus = macRuntime.currentExecutionStatus
-                return result
-            }
-
-            throw AgentRuntimeError.unavailable
-        }
-
-        if MacDexterRuntimeAllowlist.isSupported(actionRequest) {
-            let result = try await macRuntime.executeAction(actionRequest)
-            currentExecutionStatus = macRuntime.currentExecutionStatus
-            return result
-        }
-
-        guard openClawRuntime.isAvailable() else {
-            throw AgentRuntimeError.unavailable
-        }
-
         let result = try await openClawRuntime.executeAction(actionRequest)
         currentExecutionStatus = openClawRuntime.currentExecutionStatus
         return result
     }
 
     func cancelCurrentAction() async -> AgentActionCancellationResult {
-        let macCancellation = await macRuntime.cancelCurrentAction()
-        let openClawCancellation = await openClawRuntime.cancelCurrentAction()
-        if openClawCancellation.didCancel {
-            return openClawCancellation
-        }
-        return macCancellation
+        await openClawRuntime.cancelCurrentAction()
     }
 }
 

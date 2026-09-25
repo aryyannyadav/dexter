@@ -24,12 +24,23 @@ struct DexterModelGatewayAvailability: Equatable {
 @MainActor
 enum DexterModelGatewayAvailabilityResolver {
     static func resolve(ollamaProvider: OllamaProvider) async -> DexterModelGatewayAvailability {
+        guard DexterOllamaSettingsStore.shared.isOllamaProviderEnabled else {
+            return DexterModelGatewayAvailability(
+                isOllamaReachable: false,
+                isOllamaVisionModelAvailable: false,
+                isOllamaTextModelAvailable: false,
+                isClaudeWorkerConfigured: DexterWorkerProxyClient.isWorkerBaseURLConfigured,
+                isOpenAIConfigured: OpenAIModelProvider.isConfigured
+            )
+        }
+
         await ollamaProvider.refreshConnectionStatus()
         let status = ollamaProvider.connectionStatus
 
         let isOllamaReachable = status == .connected || status == .modelUnavailable
         let isTextModelAvailable = status == .connected
-        let isVisionModelAvailable = status == .connected
+        let visionModelInstalled = await ollamaProvider.isVisionModelInstalled()
+        let isVisionModelAvailable = status == .connected && visionModelInstalled
 
         return DexterModelGatewayAvailability(
             isOllamaReachable: isOllamaReachable,

@@ -149,6 +149,16 @@ final class DexterExecutionStateMachine {
         notifySnapshotChanged()
     }
 
+    /// User explicitly approved a pending action — do not treat an earlier voice-turn interrupt as a veto.
+    func acknowledgePermissionApproval() {
+        guard snapshot.currentPhase == .waitingPermission else { return }
+        snapshot = updatedSnapshot(
+            isCancellationRequested: false,
+            progressSummary: "Approval received — executing the action."
+        )
+        notifySnapshotChanged()
+    }
+
     func checkContinuationAllowed() throws {
         if snapshot.isCancellationRequested {
             throw DexterExecutionStateMachineError.cancellationRequested

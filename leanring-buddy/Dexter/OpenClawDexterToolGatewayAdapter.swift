@@ -77,12 +77,36 @@ final class OpenClawDexterToolGatewayAdapter: DexterToolGateway {
             return .unavailable(.nodeDisconnected)
         }
 
-        let executionIdentifier = UUID().uuidString
+        let executionIdentifier = OpenClawComputerUseContract.newExecutionIdentifier()
+        let nodeSnapshot = healthMonitor.preferredNodeSnapshot
+        let computerUseDescriptor = nodeSnapshot.computerUseDescriptor
+        let enrichedToolInvocation = DexterApplicationLifecycleToolInvocationEnricher.enrich(toolInvocation)
+
+        if let lifecycleUnavailableReason = DexterOpenClawApplicationLifecycleCapabilities.unavailableReason(
+            toolKind: enrichedToolInvocation.toolKind,
+            computerUseDescriptor: computerUseDescriptor
+        ) {
+            return .unavailable(lifecycleUnavailableReason)
+        }
+
         guard let invokePlan = OpenClawDexterToolInvokePlanner.plan(
-            toolInvocation: toolInvocation,
-            executionIdentifier: executionIdentifier
+            toolInvocation: enrichedToolInvocation,
+            executionIdentifier: executionIdentifier,
+            computerUseDescriptor: computerUseDescriptor,
+            advertisedCommands: nodeSnapshot.advertisedCommands
         ) else {
-            return .unavailable(.unsupportedTool(toolInvocation.actionIdentifier))
+            if DexterOpenClawApplicationLifecycleCapabilities.isApplicationLifecycleToolKind(enrichedToolInvocation.toolKind) {
+                return .unavailable(
+                    .applicationLifecycleControlUnavailable(
+                        providerLabel: computerUseDescriptor.providerLabel ?? computerUseDescriptor.providerIdentifier
+                    )
+                )
+            }
+            if enrichedToolInvocation.toolKind.requiredOpenClawCapability == .computerAct,
+               !computerUseDescriptor.advertisedActions.isEmpty {
+                return .unavailable(.capabilityMissing(.computerAct))
+            }
+            return .unavailable(.unsupportedTool(enrichedToolInvocation.actionIdentifier))
         }
 
         DexterOpenClawLog.log("tool gateway execute tool=\(toolInvocation.toolKind) command=\(invokePlan.nodeCommand)")

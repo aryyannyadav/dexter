@@ -28,8 +28,10 @@ final class CompanionManager: ObservableObject {
         switch microphoneRuntimeState {
         case .listening:
             return .listening
-        case .starting, .processing:
+        case .starting:
             return .thinking
+        case .processing:
+            return .transcribing
         case .idle, .error:
             return .idle
         }
@@ -91,7 +93,9 @@ final class CompanionManager: ObservableObject {
 
     let buddyDictationManager = BuddyDictationManager()
     let globalPushToTalkShortcutMonitor = GlobalPushToTalkShortcutMonitor()
+    private let globalHomeShortcutMonitor = DexterGlobalHomeShortcutMonitor()
     let overlayWindowManager = OverlayWindowManager()
+    private var lastAgentLifecycleAnnouncementState: DexterRuntimeUIState?
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
@@ -102,7 +106,48 @@ final class CompanionManager: ObservableObject {
     }
 
     let dexterRuntimeUIStateStore = DexterRuntimeUIStateStore()
+    let dexterAvatarPresence = DexterAvatarPresenceModel()
+
+    var activeCharacterState: DexterCharacterState {
+        dexterAvatarPresence.characterState
+    }
+
+    var isAssistantAudioSpeaking: Bool {
+        dexterSpokenResponseService.isSpeaking
+    }
+    let dexterTeachingOverlayStore = DexterTeachingOverlayStore()
+    let dexterSuggestionStore = DexterSuggestionStore()
+    @Published private(set) var dexterProductCapabilities: [DexterProductCapability] = []
+    let dexterProfileStore = DexterProfileStore()
+    let dexterFileWorkspaceStore: DexterFileWorkspaceStore
+    lazy var dexterFileWorkspaceService = DexterFileWorkspaceService(store: dexterFileWorkspaceStore)
+    let universalCommandPanelManager = DexterUniversalCommandPanelManager()
+
+    init() {
+        dexterFileWorkspaceStore = DexterFileWorkspaceStore()
+        dexterRoutineStore = DexterRoutineStore()
+        dexterFileWorkspaceStore.activityRecorder = dexterActivityRecorder
+        dexterRoutineStore.activityRecorder = dexterActivityRecorder
+        activityRecorderChangeCancellable = dexterActivityRecorder.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+    }
+
+    @Published var pendingUniversalCommandProfileId: UUID?
+    @Published var pendingUniversalCommandRoutineId: UUID?
+    @Published var pendingUniversalCommandComposerText: String?
+    @Published var shouldFocusHomeComposerAfterOnboarding = false
+    @Published var pendingOnboardingComposerPlaceholder: String?
+    @Published var pendingOnboardingFirstSuggestionPrompt: String?
+    @Published var shouldPresentRoutinesList = false
+    let dexterActivityRecorder = DexterActivityRecorder()
+    let dexterRoutineStore: DexterRoutineStore
+    let dexterProfileWorkSuggestionStore = DexterProfileWorkSuggestionStore()
+    let dexterAgentHUDController = DexterAgentHUDController()
     let interactiveOnboardingStore = DexterInteractiveOnboardingStore()
+    let firstRunOnboardingStore = DexterFirstRunOnboardingStore()
 
     var dexterDemonstrationPhaseStore: DexterRuntimeUIStateStore {
         dexterRuntimeUIStateStore
@@ -117,12 +162,45 @@ final class CompanionManager: ObservableObject {
     }
 
     private lazy var dexterOrchestrator: DexterOrchestrator = {
-        DexterOrchestratorFactory.makeDefault(
+        let orchestrator = DexterOrchestratorFactory.makeDefault(
             ollamaProvider: ollamaAIProvider,
             demonstrationPhaseStore: dexterRuntimeUIStateStore,
-            demonstrationSessionStore: dexterDemonstrationSessionStore
+            demonstrationSessionStore: dexterDemonstrationSessionStore,
+            fileWorkspaceStore: dexterFileWorkspaceStore
         )
+        wireDexterActivityRecording(orchestrator: orchestrator)
+        return orchestrator
     }()
+
+    @Published var isDexterActivityBrowserPresented = false
+    @Published var dexterActivityBrowserProfileId: UUID?
+
+    private func wireDexterActivityRecording(orchestrator: DexterOrchestrator) {
+        orchestrator.activityRecorder = dexterActivityRecorder
+        orchestrator.activityLinkageProvider = { [weak self] in
+            guard let self else {
+                return DexterActivityLinkage(dexterProfileId: nil, conversationId: nil, fileWorkspaceId: nil)
+            }
+            let workspaceId = self.dexterProfileStore.activeProfileId.flatMap {
+                self.dexterFileWorkspaceStore.workspace(forProfileId: $0)?.id
+            }
+            return DexterActivityLinkage(
+                dexterProfileId: self.dexterProfileStore.activeProfileId,
+                conversationId: self.activeHomeConversationIdentifier,
+                fileWorkspaceId: workspaceId
+            )
+        }
+        if let defaultMemoryStore = orchestrator.memoryStore as? DefaultMemoryStore {
+            defaultMemoryStore.activityRecorder = dexterActivityRecorder
+        }
+        dexterRoutineStore.activityRecorder = dexterActivityRecorder
+        dexterFileWorkspaceStore.activityRecorder = dexterActivityRecorder
+    }
+
+    func presentDexterActivityBrowser(profileId: UUID?) {
+        dexterActivityBrowserProfileId = profileId
+        isDexterActivityBrowserPresented = true
+    }
 
     private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
         return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
@@ -152,6 +230,8 @@ final class CompanionManager: ObservableObject {
     /// speaks again before the delay elapses.
     private var transientHideTask: Task<Void, Never>?
     private var interactiveOnboardingFinaleCompletionScheduled = false
+    private var activityRecorderChangeCancellable: AnyCancellable?
+    private var deferredLaunchWarmupTask: Task<Void, Never>?
 
     /// True when all three required permissions (accessibility, screen recording,
     /// microphone) are granted. Used by the panel to show a single "all good" state.
@@ -166,6 +246,7 @@ final class CompanionManager: ObservableObject {
     @Published private(set) var actionConfirmationPresentation: DexterActionConfirmationPresentation?
 
     @Published private(set) var dexterPersistentMemoryEntries: [DexterMemoryEntry] = []
+    @Published private(set) var pendingMemoryInferenceSuggestion: DexterMemoryInferenceSuggestion?
     @Published private(set) var dexterSessionExchangeCount: Int = 0
     @Published private(set) var dexterActiveTaskDescription: String?
     @Published private(set) var dexterWorkflowContextSummary: String?
@@ -173,11 +254,16 @@ final class CompanionManager: ObservableObject {
 
     @Published private(set) var dexterChatMessages: [DexterChatMessage] = []
     @Published private(set) var dexterRecentConversations: [DexterRecentConversationSummary] = []
+    /// When set, the active thread is a persisted recent conversation (archived JSON on disk).
+    @Published private(set) var activeHomeConversationIdentifier: UUID?
+    @Published var homeWorkspacePresentation: DexterHomeWorkspacePresentation = .dashboard
     @Published private(set) var dexterChatErrorMessage: String?
     @Published private(set) var dexterSpokenResponseErrorMessage: String?
+    @Published private(set) var voiceInputErrorPresentation: DexterVoiceInputErrorPresentation?
     var pendingMainWindowDestination: DexterMainWindowDestination = .chat
 
     let openClawGatewayHealthMonitor = OpenClawGatewayHealthMonitor.shared
+    lazy var dexterIntegrationService = DexterIntegrationService(healthMonitor: openClawGatewayHealthMonitor)
 
     var openClawGatewayStatusLine: String {
         openClawGatewayHealthMonitor.statusLine
@@ -198,6 +284,15 @@ final class CompanionManager: ObservableObject {
 
     func clearActivePointInvokeSession() {
         activePointInvokeSession = nil
+        dexterTeachingOverlayStore.dismiss(reason: "point_invoke_cleared")
+    }
+
+    var pointAskPresenceState: DexterPointAskPresenceState {
+        DexterPointAskPresenceState.resolve(
+            activePointInvokeSession: activePointInvokeSession,
+            isPreparingPointInvokeSession: isPreparingPointInvokeSession,
+            voiceInteractionState: dexterVoiceCoordinator.interactionState
+        )
     }
 
     func refreshDexterScreenContextUIState(logScreenPermissionDiagnostics: Bool = false) {
@@ -270,7 +365,33 @@ final class CompanionManager: ObservableObject {
     func refreshOpenClawGatewayConnection() {
         Task {
             await openClawGatewayHealthMonitor.refreshHealthIfNeeded(force: true)
+            refreshDexterIntegrations()
         }
+    }
+
+    func refreshDexterIntegrations() {
+        let integrationContext = DexterIntegrationContext(
+            activeApplicationName: lastDexterContextSnapshot?.activeApplicationName,
+            browserPageURL: lastDexterContextSnapshot?.browserURL,
+            browserPageTitle: lastDexterContextSnapshot?.browserPageTitle
+        )
+        Task {
+            await dexterIntegrationService.refreshIntegrations(context: integrationContext)
+            refreshDexterProductCapabilities()
+        }
+    }
+
+    func refreshDexterProductCapabilities() {
+        let input = DexterProductCapabilityBuildInput(
+            discoveryReport: openClawGatewayHealthMonitor.capabilityDiscoveryReport,
+            gatewayConnected: openClawGatewayHealthMonitor.connectionState.isConnected,
+            hasAccessibilityPermission: hasAccessibilityPermission,
+            hasScreenRecordingPermission: hasScreenRecordingPermission,
+            hasMicrophonePermission: hasMicrophonePermission,
+            hasScreenContentPermission: hasScreenContentPermission,
+            integrations: dexterIntegrationService.integrations
+        )
+        dexterProductCapabilities = DexterProductCapabilityRegistry.buildCapabilities(input: input)
     }
 
     var panelLastTypedAction: DexterAction? {
@@ -287,6 +408,108 @@ final class CompanionManager: ObservableObject {
             var updatedSettings = dexterOrchestrator.actionPermissionSettings
             updatedSettings.autoApproveLowRiskActions = newValue
             dexterOrchestrator.actionPermissionSettings = updatedSettings
+        }
+    }
+
+    func dexterExplicitlyEnabledProactiveAutomations() -> [DexterProactiveAutomationRegistration] {
+        dexterOrchestrator.proactiveAutomationSettingsStore.automationRegistrations
+            .filter(\.isExplicitlyEnabledByUser)
+    }
+
+    private var runningDexterRoutineIDs = Set<UUID>()
+
+    func evaluateDueDexterRoutines() {
+        DexterRoutineDueRoutineCoordinator.evaluateDueRoutines(companionManager: self)
+    }
+
+    func installUniversalCommand(settingsRouter: DexterSettingsRouter) {
+        universalCommandPanelManager.install(companionManager: self, settingsRouter: settingsRouter)
+    }
+
+    func universalCommandSearchContext() -> DexterUniversalCommandSearchContext {
+        let activeProfileId = dexterProfileStore.activeProfileId
+        let workspace = activeProfileId.flatMap { dexterFileWorkspaceStore.workspace(forProfileId: $0) }
+        return DexterUniversalCommandSearchContext(
+            activeProfileId: activeProfileId,
+            activeConversationId: activeHomeConversationIdentifier,
+            activeWorkspaceProfileId: workspace?.hasAnyLocation == true ? workspace?.dexterProfileId : nil,
+            activeWorkspaceName: workspace?.name
+        )
+    }
+
+    func searchableConversationMessages(forConversationId conversationId: UUID) -> [DexterChatMessage] {
+        if activeHomeConversationIdentifier == conversationId {
+            return dexterChatMessages
+        }
+        return loadArchivedDexterConversationMessages(conversationId: conversationId) ?? []
+    }
+
+    func runDexterRoutine(routineID: UUID, runKind: DexterRoutineRunKind) {
+        guard let routine = dexterRoutineStore.routine(withId: routineID) else { return }
+        guard routine.trigger.kind != .taskCompletion else { return }
+        guard !runningDexterRoutineIDs.contains(routineID) else { return }
+
+        if let capabilityBlockReason = DexterRoutineExecutionBridge.capabilityBlockReason(
+            routine: routine,
+            availableCapabilities: dexterProductCapabilities
+        ) {
+            dexterRoutineStore.recordRunOutcome(
+                routineId: routineID,
+                startedAt: Date(),
+                succeeded: false,
+                summary: capabilityBlockReason
+            )
+            return
+        }
+
+        if dexterProfileStore.activeProfileId != routine.dexterProfileId {
+            openDexterProfileWorkspace(profileId: routine.dexterProfileId)
+        }
+
+        runningDexterRoutineIDs.insert(routineID)
+        let startedAt = Date()
+        let userMessage = DexterRoutineExecutionBridge.userMessageForRoutineExecution(routine)
+        appendDexterUserChatMessage(userMessage)
+
+        Task { @MainActor in
+            defer { runningDexterRoutineIDs.remove(routineID) }
+            let routingDecision = DexterFastRequestRouter.route(
+                userMessage: userMessage,
+                hasPointInvokeScreenCaptures: false,
+                forcePointInvokeScreenRoute: false
+            )
+            do {
+                let response = try await DexterUserTurnExecutor.executeCoreRuntimeTurn(
+                    transcript: userMessage,
+                    inputChannel: .typedText,
+                    baseSystemPrompt: DexterAISystemPrompt.companionSystemPrompt,
+                    options: dexterModelGenerationOptions(
+                        forUserMessage: userMessage,
+                        routingDecision: routingDecision
+                    ),
+                    orchestrator: dexterOrchestrator,
+                    onTextChunk: { [weak self] chunk in
+                        self?.dexterVoiceCoordinator.appendStreamingResponseChunk(chunk)
+                    }
+                )
+                let summary = response.fullResponseText.trimmingCharacters(in: .whitespacesAndNewlines)
+                appendDexterAssistantChatMessage(summary)
+                dexterRoutineStore.recordRunOutcome(
+                    routineId: routineID,
+                    startedAt: startedAt,
+                    succeeded: !summary.isEmpty,
+                    summary: summary.isEmpty ? "No response generated." : summary
+                )
+            } catch {
+                let failureSummary = "Routine failed: \(error.localizedDescription)"
+                appendDexterAssistantChatMessage(failureSummary, isError: true)
+                dexterRoutineStore.recordRunOutcome(
+                    routineId: routineID,
+                    startedAt: startedAt,
+                    succeeded: false,
+                    summary: failureSummary
+                )
+            }
         }
     }
 
@@ -311,6 +534,20 @@ final class CompanionManager: ObservableObject {
     func submitTextMessageToDexter(_ message: String) {
         let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedMessage.isEmpty else { return }
+
+        if DexterRoutineIntentRecognizer.shouldOpenRoutineCreationFlow(for: trimmedMessage) {
+            let profileId = dexterProfileStore.activeProfileId ?? dexterProfileStore.profiles.first?.id ?? UUID()
+            let draft = DexterRoutineNaturalLanguageParser.parseCreationDraft(
+                input: trimmedMessage,
+                defaultDexterProfileId: profileId
+            )
+            dexterRoutineStore.presentCreationDraft(draft)
+            appendDexterAssistantChatMessage(
+                "I drafted a routine from that. Review the confirmation sheet before I save it."
+            )
+            return
+        }
+
         lastTranscript = trimmedMessage
         appendDexterUserChatMessage(trimmedMessage)
         DexterAnalytics.trackUserMessageSent(transcript: trimmedMessage)
@@ -318,20 +555,311 @@ final class CompanionManager: ObservableObject {
     }
 
     func startNewDexterConversation() {
+        resetActiveConversationTurnState()
         archiveCurrentDexterConversationIfNeeded()
         clearDexterSessionMemory()
         dexterChatMessages = []
-        dexterChatErrorMessage = nil
-        dexterVoiceCoordinator.resetStreamingResponseText()
         clearActivePointInvokeSession()
+        activeHomeConversationIdentifier = nil
+        dexterTeachingOverlayStore.dismiss(reason: "new_conversation")
+        if let activeProfileId = dexterProfileStore.activeProfileId {
+            homeWorkspacePresentation = .dexterWorkspace(activeProfileId)
+        }
+    }
+
+    func openDexterHomeDashboard() {
+        homeWorkspacePresentation = .dashboard
+    }
+
+    func openDexterProfileWorkspace(profileId: UUID) {
+        if dexterProfileStore.activeProfileId != profileId {
+            switchToDexterProfile(profileId: profileId)
+        }
+        homeWorkspacePresentation = .dexterWorkspace(profileId)
+    }
+
+    func switchToDexterProfile(profileId: UUID) {
+        guard dexterProfileStore.profile(withId: profileId) != nil else { return }
+        guard dexterProfileStore.activeProfileId != profileId else { return }
+
+        resetActiveConversationTurnState()
+        archiveCurrentDexterConversationIfNeeded()
+        clearDexterSessionMemory()
+
+        dexterProfileStore.setActiveProfile(id: profileId)
+        dexterChatMessages = []
+        activeHomeConversationIdentifier = nil
+        clearActivePointInvokeSession()
+        dexterTeachingOverlayStore.dismiss(reason: "dexter_profile_switch")
+
+        if let profile = dexterProfileStore.activeProfile,
+           let archivedMessages = loadArchivedDexterConversationMessages(conversationId: profile.conversationID),
+           !archivedMessages.isEmpty {
+            dexterChatMessages = archivedMessages
+            activeHomeConversationIdentifier = profile.conversationID
+        }
+
+        reloadDexterMemoryPresentation()
+        dexterSuggestionStore.refreshSuggestionsFromAuthorizedContext()
+    }
+
+    func createDexterProfileFromHome(
+        name: String,
+        purpose: String,
+        connectedIntegrations: [String],
+        workspaceURLs: [URL] = [],
+        workspaceName: String? = nil
+    ) {
+        let profile = dexterProfileStore.createProfile(
+            name: name,
+            purpose: purpose,
+            connectedIntegrations: connectedIntegrations,
+            workspace: .empty
+        )
+        attachFileWorkspacesToProfile(
+            profile: profile,
+            workspaceURLs: workspaceURLs,
+            workspaceName: workspaceName
+        )
+        openDexterProfileWorkspace(profileId: profile.id)
+    }
+
+    func synchronizeProductOnboardingGateOnLaunch() {
+        if !dexterProfileStore.profiles.isEmpty && !hasCompletedOnboarding {
+            hasCompletedOnboarding = true
+            DexterOnboardingStateStore.recordCompleted()
+        }
+    }
+
+    func skipFirstRunProductOnboardingAndOpenHome() {
+        if dexterProfileStore.profiles.isEmpty {
+            var draft = DexterOnboardingProfileDraft()
+            draft.archetype = .personal
+            draft.name = "Personal"
+            draft.roleLine = DexterOnboardingArchetype.personal.defaultRoleLine
+            draft.characterAppearance = DexterCharacterAppearance.defaultAppearance(
+                forCharacterID: DexterOnboardingArchetype.personal.characterID
+            )
+            _ = dexterProfileStore.createProfileFromOnboardingDraft(draft)
+        }
+        firstRunOnboardingStore.markSkipped()
+        hasCompletedOnboarding = true
+        DexterAnalytics.trackOnboardingCompleted(skipped: true)
+        finishFirstRunOnboardingNavigation(openComposer: true)
+    }
+
+    func finalizeFirstRunOnboardingProfileIfNeeded() {
+        guard dexterProfileStore.profiles.isEmpty else { return }
+        guard let profile = dexterProfileStore.createProfileFromOnboardingDraft(firstRunOnboardingStore.profileDraft) else {
+            return
+        }
+        let draft = firstRunOnboardingStore.profileDraft
+        if !draft.workspaceURLs.isEmpty {
+            attachFileWorkspacesToProfile(
+                profile: profile,
+                workspaceURLs: draft.workspaceURLs,
+                workspaceName: draft.workspaceName.isEmpty ? profile.name : draft.workspaceName
+            )
+        }
+        openDexterProfileWorkspace(profileId: profile.id)
+    }
+
+    private func attachFileWorkspacesToProfile(
+        profile: DexterProfile,
+        workspaceURLs: [URL],
+        workspaceName: String?
+    ) {
+        guard !workspaceURLs.isEmpty else { return }
+        dexterFileWorkspaceService.addPickedURLs(
+            profileId: profile.id,
+            profileName: profile.name,
+            urls: workspaceURLs,
+            workspaceName: workspaceName ?? profile.name
+        )
+    }
+
+    var dexterHomeUserFirstName: String {
+        let fullName = NSFullUserName().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !fullName.isEmpty else { return "there" }
+        return fullName.split(separator: " ").first.map(String.init) ?? fullName
+    }
+
+    func lastFailedDexterActionSnapshot() -> DexterProfileFailedActionSnapshot? {
+        guard let action = dexterOrchestrator.lastTypedAction else { return nil }
+        guard action.state == .failed || action.state == .verificationFailed else { return nil }
+        return DexterProfileFailedActionSnapshot(
+            actionId: action.id,
+            humanReadableDescription: action.humanReadableDescription,
+            actionType: action.type
+        )
+    }
+
+    func openAccountabilityTasks() -> [DexterAccountabilityTask] {
+        dexterOrchestrator.memoryStore.allAccountabilityTasks().filter(\.isOpen)
+    }
+
+    func handleNotchRecommendationAction(
+        _ action: DexterNotchRecommendationAction,
+        recommendation: DexterNotchRecommendation
+    ) {
+        switch action {
+        case .approvePendingPermission:
+            approvePendingActionConfirmation()
+        case .cancelPendingPermission:
+            cancelPendingActionConfirmation()
+        case .openDexterHome:
+            NotificationCenter.default.post(name: .dexterOpenMainWindow, object: nil)
+        case .openIntegrationSettings:
+            NotificationCenter.default.post(
+                name: .dexterOpenMainWindowSettings,
+                object: DexterSettingsPage.integrations
+            )
+            refreshOpenClawGatewayConnection()
+        case .executeProfileWorkSuggestion(let suggestionId, let profileId):
+            if let suggestion = dexterProfileWorkSuggestionStore
+                .suggestions(forProfileId: profileId)
+                .first(where: { $0.id == suggestionId }) {
+                executeProfileWorkSuggestion(suggestion)
+            }
+        case .openConversation(let conversationId):
+            if let conversation = dexterRecentConversations.first(where: { $0.id == conversationId }) {
+                openRecentDexterConversation(conversation)
+            } else {
+                NotificationCenter.default.post(name: .dexterOpenMainWindow, object: nil)
+            }
+        case .continueAccountabilityTask(let taskId):
+            NotificationCenter.default.post(name: .dexterOpenMainWindow, object: nil)
+            if let task = dexterOrchestrator.memoryStore.allAccountabilityTasks().first(where: { $0.id == taskId }) {
+                submitTextMessageToDexter("Help me continue this task: \(task.title)")
+            }
+        case .retryLastAgentAction:
+            retryLastAgentActionFromHUD()
+        case .explainLastAgentFailure:
+            explainLastAgentFailureFromHUD()
+        case .dismiss:
+            break
+        }
+    }
+
+    func executeProfileWorkSuggestion(_ suggestion: DexterProfileWorkSuggestion) {
+        dexterProfileWorkSuggestionStore.markAccepted(suggestion)
+        openDexterProfileWorkspace(profileId: suggestion.dexterProfileId)
+
+        switch suggestion.action {
+        case .openConversation(let conversationId):
+            if let conversation = dexterRecentConversations.first(where: { $0.id == conversationId }) {
+                openRecentDexterConversation(conversation)
+            }
+        case .runAgent(let userMessage):
+            runAgentTurnFromProfileSuggestion(userMessage: userMessage)
+        case .openIntegration:
+            NotificationCenter.default.post(
+                name: .dexterOpenMainWindowSettings,
+                object: DexterSettingsPage.integrations
+            )
+            refreshOpenClawGatewayConnection()
+        case .continueTask(let taskId):
+            if let task = dexterOrchestrator.memoryStore.allAccountabilityTasks().first(where: { $0.id == taskId }) {
+                runAgentTurnFromProfileSuggestion(userMessage: "Help me continue this task: \(task.title)")
+            } else {
+                runAgentTurnFromProfileSuggestion(userMessage: suggestion.source.displayDetail)
+            }
+        case .explain(let subject):
+            runAgentTurnFromProfileSuggestion(userMessage: "Explain this using grounded context only: \(subject)")
+        case .research(let query):
+            runAgentTurnFromProfileSuggestion(userMessage: query)
+        }
+    }
+
+    private func runAgentTurnFromProfileSuggestion(userMessage: String) {
+        let trimmedMessage = userMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty else { return }
+        lastTranscript = trimmedMessage
+        appendDexterUserChatMessage(trimmedMessage)
+        DexterAnalytics.trackUserMessageSent(transcript: trimmedMessage)
+        sendUserMessageToDexter(trimmedMessage, source: .typedText)
     }
 
     func openRecentDexterConversation(_ conversation: DexterRecentConversationSummary) {
         guard let archivedMessages = loadArchivedDexterConversationMessages(conversationId: conversation.id) else {
             return
         }
+        resetActiveConversationTurnState()
+        if dexterProfileStore.activeProfileId != conversation.dexterProfileId {
+            archiveCurrentDexterConversationIfNeeded()
+            clearDexterSessionMemory()
+            dexterProfileStore.setActiveProfile(id: conversation.dexterProfileId)
+        }
+        if activeHomeConversationIdentifier != conversation.id {
+            archiveCurrentDexterConversationIfNeeded()
+        }
+        homeWorkspacePresentation = .dexterWorkspace(conversation.dexterProfileId)
         dexterChatMessages = archivedMessages
-        dexterChatErrorMessage = nil
+        activeHomeConversationIdentifier = conversation.id
+        markRecentDexterConversationRead(conversationId: conversation.id)
+    }
+
+    func deleteRecentDexterConversation(conversationId: UUID) {
+        dexterRecentConversations.removeAll { $0.id == conversationId }
+        persistDexterRecentConversations()
+        UserDefaults.standard.removeObject(forKey: Self.archivedConversationUserDefaultsKeyPrefix + conversationId.uuidString)
+        if activeHomeConversationIdentifier == conversationId {
+            dexterChatMessages = []
+            activeHomeConversationIdentifier = nil
+            dexterChatErrorMessage = nil
+            resetActiveConversationTurnState()
+            if let activeProfileId = dexterProfileStore.activeProfileId {
+                homeWorkspacePresentation = .dexterWorkspace(activeProfileId)
+            } else {
+                homeWorkspacePresentation = .dashboard
+            }
+        }
+    }
+
+    func renameRecentDexterConversation(conversationId: UUID, title: String) {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty else { return }
+        guard let index = dexterRecentConversations.firstIndex(where: { $0.id == conversationId }) else { return }
+        dexterRecentConversations[index].title = String(trimmedTitle.prefix(80))
+        persistDexterRecentConversations()
+    }
+
+    func deleteDexterChatMessage(messageId: UUID) {
+        guard dexterVoiceCoordinator.streamingResponseText.isEmpty else { return }
+        guard let index = dexterChatMessages.firstIndex(where: { $0.id == messageId }) else { return }
+        dexterChatMessages.remove(at: index)
+        if dexterChatMessages.isEmpty {
+            if let conversationId = activeHomeConversationIdentifier {
+                dexterRecentConversations.removeAll { $0.id == conversationId }
+                persistDexterRecentConversations()
+                UserDefaults.standard.removeObject(
+                    forKey: Self.archivedConversationUserDefaultsKeyPrefix + conversationId.uuidString
+                )
+                activeHomeConversationIdentifier = nil
+            }
+        } else {
+            syncActiveHomeConversationArchiveIfNeeded()
+            if let conversationId = activeHomeConversationIdentifier,
+               let firstUserMessage = dexterChatMessages.first(where: { $0.role == .user }),
+               let summaryIndex = dexterRecentConversations.firstIndex(where: { $0.id == conversationId }) {
+                dexterRecentConversations[summaryIndex].title = String(firstUserMessage.text.prefix(56))
+                dexterRecentConversations[summaryIndex].lastUpdated = Date()
+                persistDexterRecentConversations()
+            }
+        }
+    }
+
+    func markRecentDexterConversationUnread(conversationId: UUID) {
+        guard let index = dexterRecentConversations.firstIndex(where: { $0.id == conversationId }) else { return }
+        dexterRecentConversations[index].isUnread = true
+        persistDexterRecentConversations()
+    }
+
+    func markRecentDexterConversationRead(conversationId: UUID) {
+        guard let index = dexterRecentConversations.firstIndex(where: { $0.id == conversationId }) else { return }
+        guard dexterRecentConversations[index].isUnread else { return }
+        dexterRecentConversations[index].isUnread = false
+        persistDexterRecentConversations()
     }
 
     func requestAccessibilityPermissionFromPanel() {
@@ -355,33 +883,59 @@ final class CompanionManager: ObservableObject {
     private func appendDexterUserChatMessage(_ text: String) {
         dexterChatErrorMessage = nil
         dexterSpokenResponseErrorMessage = nil
+        ensureActiveHomeConversationIdentifierForCurrentProfile()
         dexterChatMessages.append(DexterChatMessage(role: .user, text: text))
+        syncActiveHomeConversationArchiveIfNeeded()
+        dexterProfileWorkSuggestionStore.refreshFromAuthorizedContext()
+    }
+
+    private func ensureActiveHomeConversationIdentifierForCurrentProfile() {
+        guard activeHomeConversationIdentifier == nil else { return }
+        let conversationId = UUID()
+        activeHomeConversationIdentifier = conversationId
+        if let profileId = dexterProfileStore.activeProfileId {
+            dexterProfileStore.updatePrimaryConversation(profileId: profileId, conversationId: conversationId)
+        }
     }
 
     private func appendDexterAssistantChatMessage(_ text: String, isError: Bool = false) {
         dexterChatMessages.append(
             DexterChatMessage(role: .assistant, text: text, isError: isError)
         )
+        syncActiveHomeConversationArchiveIfNeeded()
     }
 
     private func archiveCurrentDexterConversationIfNeeded() {
         guard !dexterChatMessages.isEmpty else { return }
         guard let titleMessage = dexterChatMessages.first(where: { $0.role == .user }) else { return }
 
-        let conversationId = UUID()
+        let conversationId = activeHomeConversationIdentifier ?? UUID()
         let title = String(titleMessage.text.prefix(56))
+        let profileId = dexterProfileStore.activeProfileId ?? DexterSeedProfileIdentifier.personal
         let summary = DexterRecentConversationSummary(
             id: conversationId,
             title: title,
-            lastUpdated: Date()
+            lastUpdated: Date(),
+            isUnread: false,
+            dexterProfileId: profileId
         )
 
         saveArchivedDexterConversationMessages(conversationId: conversationId, messages: dexterChatMessages)
 
-        var updatedRecents = dexterRecentConversations.filter { $0.title != summary.title }
+        var updatedRecents = dexterRecentConversations.filter { $0.id != conversationId && $0.title != summary.title }
         updatedRecents.insert(summary, at: 0)
-        dexterRecentConversations = Array(updatedRecents.prefix(8))
+        dexterRecentConversations = Array(updatedRecents.prefix(12))
         persistDexterRecentConversations()
+    }
+
+    private func syncActiveHomeConversationArchiveIfNeeded() {
+        guard let conversationId = activeHomeConversationIdentifier else { return }
+        guard !dexterChatMessages.isEmpty else { return }
+        saveArchivedDexterConversationMessages(conversationId: conversationId, messages: dexterChatMessages)
+        if let index = dexterRecentConversations.firstIndex(where: { $0.id == conversationId }) {
+            dexterRecentConversations[index].lastUpdated = Date()
+            persistDexterRecentConversations()
+        }
     }
 
     private func persistDexterRecentConversations() {
@@ -432,10 +986,44 @@ final class CompanionManager: ObservableObject {
 
     func reloadDexterMemoryPresentation() {
         let memoryStore = dexterOrchestrator.memoryStore
-        dexterPersistentMemoryEntries = memoryStore.allPersistentEntries()
+        if let profileId = dexterProfileStore.activeProfileId {
+            dexterPersistentMemoryEntries = memoryStore.structuredMemories(forProfileId: profileId)
+                .map { $0.legacyMemoryEntry() }
+        } else {
+            dexterPersistentMemoryEntries = memoryStore.allPersistentEntries()
+        }
         dexterSessionExchangeCount = memoryStore.sessionExchangeCount
         dexterActiveTaskDescription = memoryStore.activeTaskDescription
         dexterWorkflowContextSummary = memoryStore.workflowContext?.summary
+        pendingMemoryInferenceSuggestion = memoryStore.peekPendingInferenceSuggestion()
+    }
+
+    func structuredMemories(forProfileId profileId: UUID) -> [DexterStructuredMemoryRecord] {
+        dexterOrchestrator.memoryStore.structuredMemories(forProfileId: profileId)
+    }
+
+    func updateDexterMemoryEntryContent(memoryId: UUID, newContent: String) {
+        if dexterOrchestrator.memoryStore.updateStructuredMemoryContent(memoryId: memoryId, newContent: newContent) {
+            reloadDexterMemoryPresentation()
+        }
+    }
+
+    func confirmPendingMemoryInferenceForActiveDexter() {
+        guard let profileId = dexterProfileStore.activeProfileId else { return }
+        dexterOrchestrator.memoryStore.confirmPendingInferenceSuggestion(
+            binding: .forDexterProfile(profileId)
+        )
+        reloadDexterMemoryPresentation()
+    }
+
+    func declinePendingMemoryInference() {
+        dexterOrchestrator.memoryStore.declinePendingInferenceSuggestion()
+        reloadDexterMemoryPresentation()
+    }
+
+    func clearDexterScopedMemory(forProfileId profileId: UUID) {
+        dexterOrchestrator.memoryStore.clearStructuredMemories(forProfileId: profileId)
+        reloadDexterMemoryPresentation()
     }
 
     func removeDexterMemoryEntry(_ entryId: UUID) {
@@ -461,6 +1049,31 @@ final class CompanionManager: ObservableObject {
     func cancelPendingActionConfirmation() {
         dexterOrchestrator.cancelPendingActionConfirmation()
         refreshActionConfirmationPresentation()
+    }
+
+    func approveAgentPermissionFromHUD(allowAlwaysForLowRisk: Bool) {
+        if allowAlwaysForLowRisk,
+           let confirmation = actionConfirmationPresentation,
+           confirmation.riskLevel == .lowRisk {
+            autoApproveLowRiskActions = true
+            dexterOrchestrator.actionPermissionSettingsStore.isComputerControlAuthorizedForSession = true
+        }
+        approvePendingActionConfirmation()
+    }
+
+    func stopActiveAgentOperationFromHUD() async {
+        await dexterOrchestrator.cancelInFlightComputerActionIfNeeded()
+        dexterAgentHUDController.dismissTerminalCard()
+    }
+
+    func retryLastAgentActionFromHUD() {
+        submitTextMessageToDexter("Please retry the last computer action.")
+        dexterAgentHUDController.dismissTerminalCard()
+    }
+
+    func explainLastAgentFailureFromHUD() {
+        submitTextMessageToDexter("Explain what went wrong with the last action.")
+        dexterAgentHUDController.dismissTerminalCard()
     }
 
     func triggerDexterEmergencyStop() async {
@@ -492,26 +1105,32 @@ final class CompanionManager: ObservableObject {
     func approvePendingActionConfirmation() {
         pendingActionApprovalTask?.cancel()
         pendingActionApprovalTask = Task {
-            dexterDemonstrationPhaseStore.transition(to: .acting, detail: "Running approved action")
-            let outcome = await dexterOrchestrator.approvePendingActionConfirmation()
-            guard !Task.isCancelled else { return }
-            refreshActionConfirmationPresentation()
-            guard let outcome else { return }
-            panelLastActionSummary = outcome.verificationReport?.summary ?? outcome.spokenSummary
-            dexterVoiceCoordinator.recordAssistantResponse(outcome.spokenSummary)
-            appendDexterAssistantChatMessage(outcome.spokenSummary)
-            dexterVoiceCoordinator.resetStreamingResponseText()
-            processInteractiveOnboardingAfterVerifiedAction(action: outcome.action)
-            let spokenOutcome = await DexterSpokenResponseController.speakAssistantTextIfEnabled(
-                text: outcome.spokenSummary,
-                voiceSettings: dexterVoiceCoordinator.voiceSettings,
-                spokenResponseService: dexterSpokenResponseService,
-                voiceCoordinator: dexterVoiceCoordinator
-            )
-            if case .failed(let error) = spokenOutcome {
-                dexterSpokenResponseErrorMessage = DexterUserFacingErrorMessage.forTextToSpeechError(error)
-            }
+            _ = await approvePendingActionConfirmationAndWait()
         }
+    }
+
+    @discardableResult
+    func approvePendingActionConfirmationAndWait() async -> DexterActionExecutionOutcome? {
+        actionConfirmationPresentation = nil
+        dexterDemonstrationPhaseStore.transition(to: .acting, detail: "Running approved action")
+        let outcome = await dexterOrchestrator.approvePendingActionConfirmation()
+        refreshActionConfirmationPresentation()
+        guard let outcome else { return nil }
+        panelLastActionSummary = outcome.verificationReport?.summary ?? outcome.spokenSummary
+        dexterVoiceCoordinator.recordAssistantResponse(outcome.spokenSummary)
+        appendDexterAssistantChatMessage(outcome.spokenSummary)
+        dexterVoiceCoordinator.resetStreamingResponseText()
+        processInteractiveOnboardingAfterVerifiedAction(action: outcome.action)
+        let spokenOutcome = await DexterSpokenResponseController.speakAssistantTextIfEnabled(
+            text: outcome.spokenSummary,
+            voiceSettings: dexterVoiceCoordinator.voiceSettings,
+            spokenResponseService: dexterSpokenResponseService,
+            voiceCoordinator: dexterVoiceCoordinator
+        )
+        if case .failed(let error) = spokenOutcome {
+            dexterSpokenResponseErrorMessage = DexterUserFacingErrorMessage.forTextToSpeechError(error)
+        }
+        return outcome
     }
 
     #if DEBUG
@@ -554,6 +1173,7 @@ final class CompanionManager: ObservableObject {
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
         } else {
+            dexterTeachingOverlayStore.dismiss(reason: "cursor_disabled")
             overlayWindowManager.hideOverlay()
             isOverlayVisible = false
         }
@@ -585,26 +1205,72 @@ final class CompanionManager: ObservableObject {
     }
 
     func start() {
+        synchronizeProductOnboardingGateOnLaunch()
         refreshAllPermissions(caller: "CompanionManager.start", emitVerbosePermissionDiagnostics: true)
         print("🔑 Dexter start — accessibility: \(hasAccessibilityPermission), screen: \(hasScreenRecordingPermission), mic: \(hasMicrophonePermission), screenContent: \(hasScreenContentPermission), onboarded: \(hasCompletedOnboarding)")
         startPermissionPolling()
         bindDemonstrationPhaseStore()
+        dexterAvatarPresence.install(companionManager: self)
+        dexterSuggestionStore.install(companionManager: self)
+        DexterRoutineDueRoutineCoordinator.install(companionManager: self)
+        openClawGatewayHealthMonitor.$capabilityDiscoveryReport
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.refreshDexterProductCapabilities()
+            }
+            .store(in: &voiceInteractionStateCancellables)
+        refreshDexterProductCapabilities()
+        dexterTeachingOverlayStore.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &voiceInteractionStateCancellables)
+        dexterSuggestionStore.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &voiceInteractionStateCancellables)
+        dexterRoutineStore.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &voiceInteractionStateCancellables)
+        dexterProfileStore.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &voiceInteractionStateCancellables)
+        dexterFileWorkspaceStore.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &voiceInteractionStateCancellables)
+        dexterProfileWorkSuggestionStore.install(companionManager: self)
+        dexterProfileWorkSuggestionStore.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &voiceInteractionStateCancellables)
         bindDexterVoiceCoordinator()
         bindAudioPowerLevel()
         bindMicrophoneRuntimeState()
         bindSpeechToTextErrorPresentation()
         bindShortcutTransitions()
         bindPointInvokeShortcut()
+        bindAgentLifecycleAnnouncements()
+        globalHomeShortcutMonitor.start()
         dexterOrchestrator.setModelIdentifier(selectedModel)
-        // Eagerly warm up the model provider TLS handshake before onboarding interactions.
-        dexterOrchestrator.warmUpModelConnectionIfNeeded()
         loadDexterRecentConversationsFromDisk()
         rebuildDexterChatMessagesFromSessionMemory()
         refreshOllamaConnectionStatus()
-        refreshOpenClawGatewayConnection()
         refreshDexterScreenContextUIState()
-        promptForMicrophoneIfNotDetermined()
-        runScreenCaptureCapabilityProbeIfNeeded()
+        scheduleDeferredLaunchWarmup()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions
@@ -707,6 +1373,7 @@ final class CompanionManager: ObservableObject {
     func stop() {
         globalPushToTalkShortcutMonitor.stop()
         buddyDictationManager.cancelCurrentDictation()
+        dexterTeachingOverlayStore.dismiss(reason: "app_stop")
         overlayWindowManager.hideOverlay()
         transientHideTask?.cancel()
 
@@ -956,11 +1623,30 @@ final class CompanionManager: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] speechToTextErrorMessage in
                 guard let self else { return }
-                guard let speechToTextErrorMessage, !speechToTextErrorMessage.isEmpty else { return }
+                guard let speechToTextErrorMessage, !speechToTextErrorMessage.isEmpty else {
+                    self.voiceInputErrorPresentation = nil
+                    return
+                }
                 guard !self.buddyDictationManager.isActivelyRecordingAudio else { return }
-                self.dexterChatErrorMessage = speechToTextErrorMessage
+
+                let presentation = DexterSpeechToTextUserFacing.presentationRemappingLegacyUserString(
+                    speechToTextErrorMessage
+                )
+                self.voiceInputErrorPresentation = presentation
+                self.dexterVoiceCoordinator.transitionToError()
+                DexterDiagnosticLog.stt("voice input error (user): \(presentation.headline)")
             }
             .store(in: &microphoneRuntimeStateCancellables)
+    }
+
+    func clearVoiceInputErrorPresentation() {
+        voiceInputErrorPresentation = nil
+        buddyDictationManager.clearSpeechToTextErrorMessage()
+        dexterVoiceCoordinator.clearVoiceInputError()
+    }
+
+    func openVoiceSettingsFromVoiceInputError() {
+        NotificationCenter.default.post(name: .dexterOpenVoiceSettings, object: nil)
     }
 
     private func bindDemonstrationPhaseStore() {
@@ -976,6 +1662,51 @@ final class CompanionManager: ObservableObject {
                 self?.objectWillChange.send()
             }
             .store(in: &voiceInteractionStateCancellables)
+    }
+
+    private func bindAgentLifecycleAnnouncements() {
+        dexterRuntimeUIStateStore.$currentState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] runtimeUIState in
+                self?.announceAgentLifecycleIfNeeded(for: runtimeUIState)
+            }
+            .store(in: &voiceInteractionStateCancellables)
+    }
+
+    private func announceAgentLifecycleIfNeeded(for runtimeUIState: DexterRuntimeUIState) {
+        guard DexterAgentSettingsStore.shared.speakWhenAgentStartsOrFinishes else { return }
+        guard dexterRuntimeUIStateStore.activeExecutionSnapshot != nil else { return }
+
+        let announcementText: String?
+        switch runtimeUIState {
+        case .acting where lastAgentLifecycleAnnouncementState != .acting:
+            announcementText = "Running the action."
+        case .done where lastAgentLifecycleAnnouncementState == .acting
+            || lastAgentLifecycleAnnouncementState == .verifying:
+            announcementText = "Action finished."
+        case .failed where lastAgentLifecycleAnnouncementState == .acting
+            || lastAgentLifecycleAnnouncementState == .verifying:
+            announcementText = "Action could not be completed."
+        default:
+            announcementText = nil
+        }
+
+        lastAgentLifecycleAnnouncementState = runtimeUIState
+
+        guard let announcementText else { return }
+
+        Task {
+            _ = await DexterSpokenResponseController.speakAssistantTextIfEnabled(
+                text: announcementText,
+                voiceSettings: DexterVoiceSettings(
+                    isPushToTalkEnabled: isPushToTalkEnabled,
+                    isSpokenResponsesEnabled: isSpokenResponsesEnabled,
+                    preferredMacSpeechVoiceIdentifier: preferredMacSpeechVoiceIdentifier
+                ),
+                spokenResponseService: dexterSpokenResponseService,
+                voiceCoordinator: dexterVoiceCoordinator
+            )
+        }
     }
 
     private func bindDexterVoiceCoordinator() {
@@ -1001,12 +1732,38 @@ final class CompanionManager: ObservableObject {
     private var voiceInteractionStateCancellables = Set<AnyCancellable>()
 
     private func cancelActiveDexterVoiceInteraction() {
-        pendingActionApprovalTask?.cancel()
+        if dexterOrchestrator.pendingActionExecution != nil {
+            dexterOrchestrator.cancelPendingActionConfirmation()
+            refreshActionConfirmationPresentation()
+        }
         userTurnController.cancelActiveTurn(
             spokenResponseService: dexterSpokenResponseService,
             voiceCoordinator: dexterVoiceCoordinator,
             orchestrator: dexterOrchestrator
         )
+    }
+
+    /// Clears in-flight model/TTS/action state when switching or starting conversations.
+    private func resetActiveConversationTurnState() {
+        cancelActiveDexterVoiceInteraction()
+        dexterVoiceCoordinator.resetStreamingResponseText()
+        dexterChatErrorMessage = nil
+        dexterSpokenResponseErrorMessage = nil
+    }
+
+    /// Network, OpenClaw, workspace migration, and mic prompt after first frame — keeps launch responsive.
+    private func scheduleDeferredLaunchWarmup() {
+        deferredLaunchWarmupTask?.cancel()
+        deferredLaunchWarmupTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard let self, !Task.isCancelled else { return }
+            dexterFileWorkspaceService.migrateAllLegacyProfileWorkspaces(profiles: dexterProfileStore.profiles)
+            dexterOrchestrator.warmUpModelConnectionIfNeeded()
+            refreshOpenClawGatewayConnection()
+            runScreenCaptureCapabilityProbeIfNeeded()
+            promptForMicrophoneIfNotDetermined()
+            evaluateDueDexterRoutines()
+        }
     }
 
     private func bindShortcutTransitions() {
@@ -1037,6 +1794,9 @@ final class CompanionManager: ObservableObject {
 
         NotificationCenter.default.post(name: .dexterDismissPanel, object: nil)
         NotificationCenter.default.post(name: .dexterOpenMainWindow, object: nil)
+        NotificationCenter.default.post(name: .dexterHomeFocusChat, object: nil)
+
+        ensureCompanionOverlayVisibleForFirstRunInteraction()
 
         Task {
             let session = await dexterOrchestrator.preparePointInvokeSession(
@@ -1049,6 +1809,8 @@ final class CompanionManager: ObservableObject {
             isPreparingPointInvokeSession = false
             interactiveOnboardingStore.registerPointCaptureIfNeeded()
             syncInteractiveOnboardingOverlayPrompt()
+            registerFirstRunPointCaptureIfNeeded(session: session)
+            presentPointAskCaptureUI(for: session)
 
             if session.contextSnapshot.screenCaptureAvailability == .permissionMissing {
                 dexterScreenContextUIState = .permissionRequired
@@ -1060,7 +1822,22 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    private func dexterModelGenerationOptions(forUserMessage userMessage: String) -> DexterModelGenerationOptions {
+    private func presentPointAskCaptureUI(for session: DexterPointInvokeSession) {
+        if !overlayWindowManager.isShowingOverlay() {
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+        dexterTeachingOverlayStore.presentPointAskCaptureMarker(session: session)
+        DexterAnalytics.trackPointAskCapture(
+            hasSemanticTarget: session.pointerSemanticTarget != nil,
+            evidenceSources: session.pointerSemanticTarget?.evidence.map(\.source.rawValue) ?? []
+        )
+    }
+
+    private func dexterModelGenerationOptions(
+        forUserMessage userMessage: String,
+        routingDecision: DexterRequestRoutingDecision
+    ) -> DexterModelGenerationOptions {
         if let activePointInvokeSession {
             return DexterModelGenerationOptions(
                 screenCaptureOverride: activePointInvokeSession.screenCaptureSnapshots.isEmpty
@@ -1069,13 +1846,26 @@ final class CompanionManager: ObservableObject {
                 includeSessionConversationHistory: true,
                 hasPersistedScreenContentGrant: hasScreenContentPermission,
                 pointerLocationInScreenSpaceOverride: activePointInvokeSession.pointerLocationInScreenSpace,
-                usePointAtContextRelevancePlan: true
+                usePointAtContextRelevancePlan: true,
+                routingDecision: routingDecision,
+                activeDexterProfileId: dexterProfileStore.activeProfileId
             )
         }
 
         return DexterModelGenerationOptions(
-            hasPersistedScreenContentGrant: hasScreenContentPermission
+            hasPersistedScreenContentGrant: hasScreenContentPermission,
+            pointerLocationInScreenSpaceOverride: routingDecision.pinPointerForContext
+                ? NSEvent.mouseLocation
+                : nil,
+            routingDecision: routingDecision,
+            activeDexterProfileId: dexterProfileStore.activeProfileId,
+            activeFileWorkspaceId: activeFileWorkspaceIdentifierForMemoryBinding()
         )
+    }
+
+    private func activeFileWorkspaceIdentifierForMemoryBinding() -> UUID? {
+        guard let profileId = dexterProfileStore.activeProfileId else { return nil }
+        return dexterFileWorkspaceStore.workspace(forProfileId: profileId)?.id
     }
 
     private func handleShortcutTransition(_ transition: BuddyPushToTalkShortcut.ShortcutTransition) {
@@ -1129,6 +1919,7 @@ final class CompanionManager: ObservableObject {
 
         DexterAnalytics.trackPushToTalkStarted()
         promptForMicrophoneIfNotDetermined()
+        clearVoiceInputErrorPresentation()
 
         pendingKeyboardShortcutStartTask?.cancel()
         pendingKeyboardShortcutStartTask = Task {
@@ -1141,6 +1932,8 @@ final class CompanionManager: ObservableObject {
                     DexterCoreExecutionPipelineLog.log(phase: .speechToText, detail: "finalized")
                     DexterMicDiagnosticLog.log("transcript received (\(finalTranscript.count) characters)")
                     DexterDiagnosticLog.stt("transcript received (\(finalTranscript.count) characters)")
+                    self?.voiceInputErrorPresentation = nil
+                    self?.dexterVoiceCoordinator.transitionToThinking()
                     self?.lastTranscript = finalTranscript
                     self?.appendDexterUserChatMessage(finalTranscript)
                     DexterAnalytics.trackUserMessageSent(transcript: finalTranscript)
@@ -1170,6 +1963,13 @@ final class CompanionManager: ObservableObject {
 
     /// Speech-to-text (push-to-talk) or typed text → streamed model response → optional TTS.
     private func sendUserMessageToDexter(_ transcript: String, source: DexterUserInputChannel) {
+        let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTranscript.isEmpty else {
+            DexterDiagnosticLog.voice("ignored empty user message (source=\(source))")
+            dexterVoiceCoordinator.transitionToIdle()
+            return
+        }
+
         cancelActiveDexterVoiceInteraction()
         let turnGeneration = userTurnController.beginTurn()
 
@@ -1179,11 +1979,19 @@ final class CompanionManager: ObservableObject {
             }
             _ = DexterTurnTrace.beginTurn()
             var turnOutcome: DexterTurnOutcome?
+            var turnOperationalOutcome: DexterOperationalOutcomeCategory?
+            DexterPerformanceTiming.markInputReceived()
+            let routingDecision = DexterFastRequestRouter.route(
+                userMessage: trimmedTranscript,
+                hasPointInvokeScreenCaptures: activePointInvokeSession?.screenCaptureSnapshots.isEmpty == false,
+                forcePointInvokeScreenRoute: activePointInvokeSession != nil
+            )
+            DexterPerformanceTiming.markRoutingCompleted(route: routingDecision.route)
             let screenRecordingPreflightGranted = CGPreflightScreenCaptureAccess()
-            let userRequestedScreenContext = activePointInvokeSession != nil
-                || DexterContextRelevancePlanner.shouldRequestScreenCapture(forUserMessage: transcript)
+            let userRequestedScreenContext = routingDecision.requiresScreenCapture
 
             defer {
+                DexterPerformanceTiming.markResponseCompleted()
                 if turnOutcome == nil {
                     if Task.isCancelled {
                         turnOutcome = .cancelled
@@ -1201,7 +2009,16 @@ final class CompanionManager: ObservableObject {
                         DexterVisionTiming.markTurnCompleted()
                     }
                 }
-                DexterTurnTrace.finish(outcome: turnOutcome ?? .error)
+                let resolvedTurnOutcome = turnOutcome ?? .error
+                let resolvedOperationalOutcome = turnOperationalOutcome
+                    ?? DexterTurnOutcomeResolver.operationalOutcome(
+                        for: resolvedTurnOutcome,
+                        orchestrator: dexterOrchestrator
+                    )
+                DexterTurnTrace.finish(
+                    outcome: resolvedTurnOutcome,
+                    operationalOutcome: resolvedOperationalOutcome
+                )
                 refreshDexterScreenContextUIState(logScreenPermissionDiagnostics: false)
                 if dexterVoiceCoordinator.interactionState == .thinking {
                     dexterVoiceCoordinator.transitionToIdle()
@@ -1216,7 +2033,8 @@ final class CompanionManager: ObservableObject {
             dexterVoiceCoordinator.transitionToThinking()
             DexterDiagnosticLog.model("generation started")
 
-            DexterTurnTrace.log("USER REQUEST: \(transcript)")
+            DexterTurnTrace.log("USER REQUEST: \(trimmedTranscript)")
+            DexterTurnTrace.log("request_route=\(routingDecision.route.rawValue)")
             DexterTurnTrace.log("visualContextRequired=\(userRequestedScreenContext)")
             DexterTurnTrace.log("orchestrator started")
             if userRequestedScreenContext {
@@ -1241,12 +2059,18 @@ final class CompanionManager: ObservableObject {
 
             do {
                 let orchestratorResponse = try await DexterUserTurnExecutor.executeCoreRuntimeTurn(
-                    transcript: transcript,
+                    transcript: trimmedTranscript,
                     inputChannel: source,
                     baseSystemPrompt: DexterAISystemPrompt.companionSystemPrompt,
-                    options: dexterModelGenerationOptions(forUserMessage: transcript),
+                    options: dexterModelGenerationOptions(
+                        forUserMessage: trimmedTranscript,
+                        routingDecision: routingDecision
+                    ),
                     orchestrator: dexterOrchestrator,
                     onTextChunk: { [weak self] chunk in
+                        if !chunk.isEmpty {
+                            DexterPerformanceTiming.markFirstTokenReceived()
+                        }
                         self?.dexterVoiceCoordinator.appendStreamingResponseChunk(chunk)
                     }
                 )
@@ -1287,6 +2111,7 @@ final class CompanionManager: ObservableObject {
                 appendDexterAssistantChatMessage(spokenText)
                 dexterVoiceCoordinator.resetStreamingResponseText()
                 dexterVoiceCoordinator.transitionToIdle()
+                registerFirstRunProgressAfterSuccessfulTurn(source: source)
 
                 // Handle element pointing if Claude returned coordinates.
                 // Thinking already ended; overlay can show the triangle for pointing.
@@ -1301,6 +2126,9 @@ final class CompanionManager: ObservableObject {
                     }
                     return screenCaptures.first(where: { $0.isCursorScreen })
                 }()
+
+                var resolvedGlobalTargetForTeaching: CGPoint?
+                var resolvedDisplayFrameForTeaching: CGRect?
 
                 if let pointCoordinate = parseResult.coordinate,
                    let targetScreenCapture {
@@ -1332,14 +2160,24 @@ final class CompanionManager: ObservableObject {
 
                     detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
+                    resolvedGlobalTargetForTeaching = globalLocation
+                    resolvedDisplayFrameForTeaching = displayFrame
                     DexterAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
                 }
 
+                updateTeachingOverlayAfterModelTurn(
+                    orchestratorResponse: orchestratorResponse,
+                    parseResult: parseResult,
+                    globalTargetPoint: resolvedGlobalTargetForTeaching,
+                    targetDisplayFrame: resolvedDisplayFrameForTeaching
+                )
+                dexterSuggestionStore.refreshSuggestionsFromAuthorizedContext()
+
                 dexterOrchestrator.recordConversationExchange(
-                    userTranscript: transcript,
+                    userTranscript: trimmedTranscript,
                     assistantResponse: spokenText
                 )
                 if orchestratorResponse.responseMode == .act {
@@ -1354,11 +2192,21 @@ final class CompanionManager: ObservableObject {
                 print("🧠 Conversation history: \(exchangeCount) exchanges")
 
                 DexterAnalytics.trackAIResponseReceived(response: spokenText)
-                turnOutcome = .success
 
-                await processInteractiveOnboardingAfterModelTurn(
-                    userTranscript: transcript,
+                if let onboardingTurnOutcome = await processInteractiveOnboardingAfterModelTurn(
+                    userTranscript: trimmedTranscript,
                     orchestratorResponse: orchestratorResponse
+                ) {
+                    turnOutcome = onboardingTurnOutcome
+                } else {
+                    turnOutcome = DexterTurnOutcomeResolver.resolve(
+                        orchestrator: dexterOrchestrator,
+                        orchestratorResponse: orchestratorResponse
+                    )
+                }
+                turnOperationalOutcome = DexterTurnOutcomeResolver.operationalOutcome(
+                    for: turnOutcome ?? .error,
+                    orchestrator: dexterOrchestrator
                 )
 
                 if userTurnController.isTurnStillActive(generation: turnGeneration) {
@@ -1446,9 +2294,62 @@ final class CompanionManager: ObservableObject {
             // Pause 1s after everything finishes, then fade out
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             guard !Task.isCancelled else { return }
+            dexterTeachingOverlayStore.dismiss(reason: "overlay_hidden")
             overlayWindowManager.fadeOutAndHideOverlay()
             isOverlayVisible = false
         }
+    }
+
+    private func updateTeachingOverlayAfterModelTurn(
+        orchestratorResponse: DexterOrchestratorModelResponse,
+        parseResult: PointingParseResult,
+        globalTargetPoint: CGPoint?,
+        targetDisplayFrame: CGRect?
+    ) {
+        let activeTeachingSession = dexterOrchestrator.teachingSessionStore.activeSession
+        let pointSession = activePointInvokeSession
+        let normalizedUserMessage = orchestratorResponse.context.userMessage.text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let isPointerTeachTurn = DexterPointerControlWorkflow.matchesPointerTeachIntent(
+            normalizedUserMessage: normalizedUserMessage
+        )
+        let resolvedGlobalTarget = globalTargetPoint
+            ?? pointSession?.pointerLocationInScreenSpace
+        let resolvedDisplayFrame = targetDisplayFrame
+            ?? pointSession.flatMap {
+                DexterPointAskHighlightPlanner.displayFrameContaining(
+                    pointInScreenSpace: $0.pointerLocationInScreenSpace
+                )
+            }
+        let resolvedElementLabel = parseResult.elementLabel
+            ?? pointSession?.userFacingSemanticTargetLabel
+            ?? pointSession?.pointerSemanticTarget?.confirmationLabel
+
+        let shouldShowTeachingAnnotations =
+            activeTeachingSession != nil
+            || parseResult.coordinate != nil
+            || pointSession != nil
+            || isPointerTeachTurn
+            || orchestratorResponse.responseMode == .teach
+            || orchestratorResponse.responseMode == .explain
+            || orchestratorResponse.responseMode == .guide
+            || orchestratorResponse.responseMode == .troubleshoot
+
+        if shouldShowTeachingAnnotations && !overlayWindowManager.isShowingOverlay() {
+            overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+            isOverlayVisible = true
+        }
+
+        dexterTeachingOverlayStore.presentFromModelTurn(
+            targetGlobalPoint: resolvedGlobalTarget,
+            targetDisplayFrame: resolvedDisplayFrame,
+            elementLabel: resolvedElementLabel,
+            pointerGlobalPoint: pointSession?.pointerLocationInScreenSpace
+                ?? lastDexterContextSnapshot?.pointerLocationInScreenSpace,
+            teachingSession: activeTeachingSession,
+            shouldShowTeachingAnnotations: shouldShowTeachingAnnotations
+        )
     }
 
     // MARK: - Point Tag Parsing
@@ -1510,6 +2411,51 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Onboarding
 
+    func prepareFirstRunOnboardingStep(_ step: DexterFirstRunOnboardingStep) {
+        guard !hasCompletedOnboarding else { return }
+    }
+
+    func completeFirstRunProductOnboardingAndOpenHome() {
+        finalizeFirstRunOnboardingProfileIfNeeded()
+        firstRunOnboardingStore.markFinished()
+        hasCompletedOnboarding = true
+        interactiveOnboardingStore.markCompleted()
+        interactiveOnboardingStore.resetToInactive()
+        stopOnboardingMusic()
+
+        if let archetype = firstRunOnboardingStore.profileDraft.archetype {
+            pendingOnboardingFirstSuggestionPrompt = archetype.firstRunSuggestionPrompt
+        }
+        pendingOnboardingComposerPlaceholder = "What do you want to do?"
+        DexterAnalytics.trackOnboardingCompleted(skipped: false)
+
+        finishFirstRunOnboardingNavigation(openComposer: true)
+    }
+
+    private func finishFirstRunOnboardingNavigation(openComposer: Bool) {
+        if openComposer {
+            shouldFocusHomeComposerAfterOnboarding = true
+        }
+        NotificationCenter.default.post(name: .dexterFirstRunOnboardingDidFinish, object: nil)
+        NotificationCenter.default.post(name: .dexterOpenMainWindow, object: nil)
+        NotificationCenter.default.post(name: .dexterHomeFocusChat, object: nil)
+    }
+
+    private func ensureCompanionOverlayVisibleForFirstRunInteraction() {
+        guard !isOverlayVisible else { return }
+        overlayWindowManager.hasShownOverlayBefore = true
+        overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
+        isOverlayVisible = true
+    }
+
+    private func registerFirstRunProgressAfterSuccessfulTurn(source: DexterUserInputChannel) {
+        _ = source
+    }
+
+    private func registerFirstRunPointCaptureIfNeeded(session: DexterPointInvokeSession) {
+        _ = session
+    }
+
     /// Called by BlueCursorView after the short welcome bubble — starts experiential onboarding.
     func setupOnboardingVideo() {
         showOnboardingVideo = false
@@ -1563,19 +2509,19 @@ final class CompanionManager: ObservableObject {
     private func processInteractiveOnboardingAfterModelTurn(
         userTranscript: String,
         orchestratorResponse: DexterOrchestratorModelResponse
-    ) async {
-        guard interactiveOnboardingStore.isActive else { return }
+    ) async -> DexterTurnOutcome? {
+        guard interactiveOnboardingStore.isActive else { return nil }
         refreshActionConfirmationPresentation()
 
         switch interactiveOnboardingStore.phase {
         case .awaitingExplainQuestion:
-            guard activePointInvokeSession != nil else { return }
-            guard DexterInteractiveOnboardingPolicy.isLikelyExplainUtterance(userTranscript) else { return }
-            guard !orchestratorResponse.fullResponseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+            guard activePointInvokeSession != nil else { return nil }
+            guard DexterInteractiveOnboardingPolicy.isLikelyExplainUtterance(userTranscript) else { return nil }
+            guard !orchestratorResponse.fullResponseText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             interactiveOnboardingStore.registerExplainTurnCompletedIfNeeded()
             syncInteractiveOnboardingOverlayPrompt()
         case .awaitingActionRequest:
-            guard DexterInteractiveOnboardingPolicy.isLikelyActionUtterance(userTranscript) else { return }
+            guard DexterInteractiveOnboardingPolicy.isLikelyActionUtterance(userTranscript) else { return nil }
             if orchestratorResponse.responseMode == .act {
                 interactiveOnboardingStore.registerActionRequestStartedIfNeeded()
                 syncInteractiveOnboardingOverlayPrompt()
@@ -1583,7 +2529,9 @@ final class CompanionManager: ObservableObject {
             if dexterOrchestrator.actionConfirmationPresentation() != nil,
                let pendingAction = dexterOrchestrator.lastTypedAction,
                DexterInteractiveOnboardingPolicy.shouldAutoApproveOnboardingAction(action: pendingAction) {
-                approvePendingActionConfirmation()
+                if let approvalOutcome = await approvePendingActionConfirmationAndWait() {
+                    return DexterTurnOutcomeResolver.resolveAfterApprovedActionExecution(outcome: approvalOutcome)
+                }
             } else if let completedAction = dexterOrchestrator.lastTypedAction,
                       completedAction.state == .completed {
                 processInteractiveOnboardingAfterVerifiedAction(action: completedAction)
@@ -1596,6 +2544,7 @@ final class CompanionManager: ObservableObject {
         default:
             break
         }
+        return nil
     }
 
     private func processInteractiveOnboardingAfterVerifiedAction(action: DexterAction) {

@@ -48,12 +48,20 @@ final class MockOpenClawNodeInvokeClient: OpenClawNodeInvoking {
 }
 
 struct DexterOpenClawToolGatewayTests {
+    private static let testComputerUseDescriptor = OpenClawNodeComputerUseDescriptorSnapshot(
+        providerIdentifier: "peekaboo",
+        providerLabel: "Peekaboo",
+        contractVersion: 2,
+        advertisedActions: OpenClawNodeComputerUseDescriptorSnapshot.dexterMappedComputerUseActions
+    )
+
     private static let connectedNodeSnapshot = OpenClawNodeCapabilitySnapshot(
         nodeIdentifier: "node-abc",
         displayName: "Test Mac",
         isPaired: true,
         isConnected: true,
         advertisedCommands: ["computer.act", "screen.snapshot", "browser.proxy", "system.run"],
+        computerUseDescriptor: testComputerUseDescriptor,
         permissions: OpenClawNodePermissionSnapshot(
             accessibilityGranted: true,
             screenRecordingGranted: true,
@@ -81,6 +89,7 @@ struct DexterOpenClawToolGatewayTests {
             isPaired: true,
             isConnected: false,
             advertisedCommands: ["computer.act"],
+            computerUseDescriptor: testComputerUseDescriptor,
             permissions: Self.connectedNodeSnapshot.permissions
         )
         let report = DexterOpenClawCapabilityDiscovery.report(
@@ -97,6 +106,7 @@ struct DexterOpenClawToolGatewayTests {
             isPaired: true,
             isConnected: true,
             advertisedCommands: ["screen.snapshot"],
+            computerUseDescriptor: testComputerUseDescriptor,
             permissions: Self.connectedNodeSnapshot.permissions
         )
         let report = DexterOpenClawCapabilityDiscovery.report(
@@ -116,6 +126,7 @@ struct DexterOpenClawToolGatewayTests {
             isPaired: true,
             isConnected: false,
             advertisedCommands: ["computer.act"],
+            computerUseDescriptor: testComputerUseDescriptor,
             permissions: Self.connectedNodeSnapshot.permissions
         )
 
@@ -144,6 +155,7 @@ struct DexterOpenClawToolGatewayTests {
             isPaired: true,
             isConnected: true,
             advertisedCommands: ["computer.act"],
+            computerUseDescriptor: testComputerUseDescriptor,
             permissions: Self.connectedNodeSnapshot.permissions
         )
 
@@ -248,7 +260,9 @@ struct DexterOpenClawToolGatewayTests {
                 actionIdentifier: DexterActionType.openApplication.rawValue,
                 parameters: ["applicationName": "SampleApp"]
             ),
-            executionIdentifier: "exec-1"
+            executionIdentifier: "a1b2c3d4-e5f6-4789-abcd-ef0123456789",
+            computerUseDescriptor: testComputerUseDescriptor,
+            advertisedCommands: Self.connectedNodeSnapshot.advertisedCommands
         )
         #expect(launchPlan?.nodeCommand == "computer.act")
         #expect(launchPlan?.parametersJSON.contains("launch_app") == true)
@@ -259,7 +273,9 @@ struct DexterOpenClawToolGatewayTests {
                 actionIdentifier: DexterActionType.quitApplication.rawValue,
                 parameters: ["applicationName": "SampleApp"]
             ),
-            executionIdentifier: "exec-2"
+            executionIdentifier: "b2c3d4e5-f6a7-4890-bcde-f01234567890",
+            computerUseDescriptor: testComputerUseDescriptor,
+            advertisedCommands: Self.connectedNodeSnapshot.advertisedCommands
         )
         #expect(quitPlan?.parametersJSON.contains("kill_app") == true)
     }
@@ -286,6 +302,7 @@ struct DexterOpenClawToolGatewayTests {
             isPaired: true,
             isConnected: true,
             advertisedCommands: ["computer.act"],
+            computerUseDescriptor: testComputerUseDescriptor,
             permissions: OpenClawNodePermissionSnapshot(
                 accessibilityGranted: false,
                 screenRecordingGranted: true,

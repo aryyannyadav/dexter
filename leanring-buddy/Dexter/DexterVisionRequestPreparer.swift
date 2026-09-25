@@ -6,6 +6,47 @@
 import Foundation
 
 enum DexterVisionRequestPreparer {
+    /// Runs JPEG crop/resize off the main thread before vision model requests.
+    static func preparePayloadAsync(
+        dexterContext: DexterContext,
+        userMessage: String
+    ) async -> DexterPreparedVisionPayload? {
+        guard let primaryScreenshot = dexterContext.screen.primaryScreenshot
+            ?? dexterContext.screenCaptures.first(where: { $0.isCursorScreen })
+            ?? dexterContext.screenCaptures.first
+        else {
+            return nil
+        }
+
+        let scope = DexterVisionScopeSelector.preferredScope(
+            userMessage: userMessage,
+            dexterContext: dexterContext
+        )
+        let attentionContext = dexterContext.attention
+
+        return await Task.detached(priority: .userInitiated) {
+            guard let jpegData = DexterVisionImageEncoder.encodedJPEG(
+                from: primaryScreenshot,
+                scope: scope,
+                attentionContext: attentionContext
+            ) else {
+                return nil
+            }
+
+            let dimensions = DexterVisionImageEncoder.pixelDimensions(of: jpegData)
+            let scopeLabel = scope.rawValue
+            let imageLabel = "\(primaryScreenshot.label) (vision scope: \(scopeLabel))"
+
+            return DexterPreparedVisionPayload(
+                jpegImageData: jpegData,
+                scope: scope,
+                imageLabel: imageLabel,
+                pixelWidth: dimensions?.width ?? primaryScreenshot.screenshotWidthInPixels,
+                pixelHeight: dimensions?.height ?? primaryScreenshot.screenshotHeightInPixels
+            )
+        }.value
+    }
+
     static func preparePayload(
         dexterContext: DexterContext,
         userMessage: String

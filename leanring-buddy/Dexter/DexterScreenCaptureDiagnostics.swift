@@ -8,7 +8,9 @@ import Foundation
 enum DexterScreenCaptureDiagnostics {
     static func logCaptureStart(reason: String) {
         DexterTurnTrace.log("SCREEN CAPTURE START reason=\(reason)")
-        print("[SCREEN-CAPTURE-START] reason=\(reason)")
+        if DexterDeveloperModeSettings.isDeveloperModeEnabled {
+            print("[SCREEN-CAPTURE-START] reason=\(reason)")
+        }
     }
 
     static func logCaptureComplete(reason: String, imageCount: Int) {
@@ -17,6 +19,8 @@ enum DexterScreenCaptureDiagnostics {
 
     static func logJPEGConversion(reason: String) {
         DexterTurnTrace.log("JPEG COMPLETE reason=\(reason)")
-        print("[SCREEN-JPEG] reason=\(reason)")
+        if DexterDeveloperModeSettings.isDeveloperModeEnabled {
+            print("[SCREEN-JPEG] reason=\(reason)")
+        }
     }
 }

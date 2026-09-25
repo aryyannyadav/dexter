@@ -63,7 +63,7 @@ struct DexterTeachingContextFingerprint: Equatable, Codable {
 struct DexterTeachingSession: Equatable, Codable {
     let lessonIdentifier: String
     let teachingMode: DexterTeachingMode
-    let teachingStyle: DexterTeachingStyle
+    var teachingStyle: DexterTeachingStyle
     var currentStepIndex: Int
     var phase: DexterTeachingStepPhase
     var currentInstructionSummary: String

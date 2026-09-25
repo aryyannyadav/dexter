@@ -62,6 +62,34 @@ struct leanring_buddyTests {
         #expect(coordinator.streamingResponseText == "hello world")
     }
 
+    @Test func ollamaStreamDeltaPreservesWhitespaceOnlyChunks() async throws {
+        let chunks = ["Hey!", " ", "Ready", " ", "to", " ", "help."]
+        var accumulated = ""
+        for chunk in chunks {
+            let delta = OllamaResponseSanitizer.userFacingAssistantStreamDelta(
+                content: chunk,
+                separateThinkingField: nil
+            )
+            guard !delta.isEmpty else { continue }
+            accumulated += delta
+        }
+        #expect(accumulated == "Hey! Ready to help.")
+
+        let trimmedFinal = OllamaResponseSanitizer.userFacingAssistantText(
+            content: accumulated,
+            separateThinkingField: nil
+        )
+        #expect(trimmedFinal == "Hey! Ready to help.")
+    }
+
+    @Test func ollamaFinalAssistantTextStillTrimsOuterWhitespace() async throws {
+        let text = OllamaResponseSanitizer.userFacingAssistantText(
+            content: "  hello world  \n",
+            separateThinkingField: nil
+        )
+        #expect(text == "hello world")
+    }
+
     @Test func dexterVoiceSettingsDisablePushToTalkWithoutBlockingTextPath() async throws {
         let settingsStore = InMemoryDexterVoiceSettingsStore(
             currentSettings: DexterVoiceSettings(isPushToTalkEnabled: false, isSpokenResponsesEnabled: false)

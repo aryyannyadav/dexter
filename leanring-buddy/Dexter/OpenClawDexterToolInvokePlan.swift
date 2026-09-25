@@ -15,61 +15,119 @@ struct OpenClawDexterToolInvokePlan: Equatable {
 enum OpenClawDexterToolInvokePlanner {
     static func plan(
         toolInvocation: DexterToolInvocation,
-        executionIdentifier: String
+        executionIdentifier: String,
+        computerUseDescriptor: OpenClawNodeComputerUseDescriptorSnapshot,
+        advertisedCommands: [String]
     ) -> OpenClawDexterToolInvokePlan? {
         switch toolInvocation.toolKind {
         case .launchApplication:
-            guard let applicationName = toolInvocation.parameters["applicationName"] else { return nil }
+            guard let openClawApplicationToken = resolvedOpenClawApplicationToken(from: toolInvocation) else { return nil }
+            guard computerUseDescriptor.advertisesComputerUseAction("launch_app") else { return nil }
             return computerActPlan(
                 executionIdentifier: executionIdentifier,
                 actionName: "launch_app",
-                fields: ["app": applicationName]
+                fields: ["app": .string(openClawApplicationToken)]
             )
         case .quitApplication:
-            guard let applicationName = toolInvocation.parameters["applicationName"] else { return nil }
+            guard let openClawApplicationToken = resolvedOpenClawApplicationToken(from: toolInvocation) else { return nil }
+            guard computerUseDescriptor.advertisesComputerUseAction("kill_app") else { return nil }
             return computerActPlan(
                 executionIdentifier: executionIdentifier,
                 actionName: "kill_app",
-                fields: ["app": applicationName]
+                fields: ["app": .string(openClawApplicationToken)]
             )
         case .focusApplication:
-            guard let applicationName = toolInvocation.parameters["applicationName"] else { return nil }
-            // OpenClaw 2026.9.x focuses by re-launching/bringing the app forward via launch_app.
+            if let windowRef = toolInvocation.parameters["windowRef"],
+               computerUseDescriptor.advertisesComputerUseAction("bring_to_front") {
+                return computerActPlan(
+                    executionIdentifier: executionIdentifier,
+                    actionName: "bring_to_front",
+                    fields: ["windowRef": .string(windowRef)]
+                )
+            }
+            guard let openClawApplicationToken = resolvedOpenClawApplicationToken(from: toolInvocation) else { return nil }
+            if computerUseDescriptor.advertisesComputerUseAction("launch_app") {
+                return computerActPlan(
+                    executionIdentifier: executionIdentifier,
+                    actionName: "launch_app",
+                    fields: ["app": .string(openClawApplicationToken)]
+                )
+            }
+            if computerUseDescriptor.advertisesComputerUseAction("bring_to_front") {
+                return computerActPlan(
+                    executionIdentifier: executionIdentifier,
+                    actionName: "bring_to_front",
+                    fields: ["app": .string(openClawApplicationToken)]
+                )
+            }
+            return nil
+        case .listRunningApplications:
+            guard computerUseDescriptor.advertisesComputerUseAction("list_apps") else { return nil }
             return computerActPlan(
                 executionIdentifier: executionIdentifier,
-                actionName: "launch_app",
-                fields: ["app": applicationName]
+                actionName: "list_apps",
+                fields: [:]
             )
         case .click:
-            guard let x = toolInvocation.parameters["x"], let y = toolInvocation.parameters["y"] else { return nil }
+            guard let xText = toolInvocation.parameters["x"],
+                  let yText = toolInvocation.parameters["y"],
+                  let xCoordinate = Double(xText),
+                  let yCoordinate = Double(yText) else { return nil }
+            guard computerUseDescriptor.advertisesComputerUseAction("left_click") else { return nil }
+            var fields: [String: OpenClawComputerActJSONValue] = [
+                "x": .double(xCoordinate),
+                "y": .double(yCoordinate)
+            ]
+            if let displayFrameId = toolInvocation.parameters["displayFrameId"] {
+                fields["displayFrameId"] = .string(displayFrameId)
+            }
+            if let observationId = toolInvocation.parameters["observationId"] {
+                fields["observationId"] = .string(observationId)
+            }
+            if let screenIndexText = toolInvocation.parameters["screenIndex"],
+               let screenIndex = Int(screenIndexText) {
+                fields["screenIndex"] = .int(screenIndex)
+            }
             return computerActPlan(
                 executionIdentifier: executionIdentifier,
-                actionName: "click",
-                fields: ["x": x, "y": y]
+                actionName: "left_click",
+                fields: fields
             )
         case .typeText:
             guard let text = toolInvocation.parameters["text"] else { return nil }
+            guard computerUseDescriptor.advertisesComputerUseAction("type") else { return nil }
             return computerActPlan(
                 executionIdentifier: executionIdentifier,
                 actionName: "type",
-                fields: ["text": text]
+                fields: ["text": .string(text)]
             )
         case .keyPress:
             let keys = toolInvocation.parameters["shortcut"]
                 ?? toolInvocation.parameters["keys"]
                 ?? ""
+            guard !keys.isEmpty else { return nil }
+            guard computerUseDescriptor.advertisesComputerUseAction("key") else { return nil }
             return computerActPlan(
                 executionIdentifier: executionIdentifier,
-                actionName: "key_press",
-                fields: ["keys": keys]
+                actionName: "key",
+                fields: ["keys": .string(keys)]
             )
         case .scroll:
-            var fields: [String: String] = [:]
-            if let deltaX = toolInvocation.parameters["deltaX"] { fields["deltaX"] = deltaX }
-            if let deltaY = toolInvocation.parameters["deltaY"] { fields["deltaY"] = deltaY }
-            if let direction = toolInvocation.parameters["direction"] { fields["direction"] = direction }
-            if let x = toolInvocation.parameters["x"] { fields["x"] = x }
-            if let y = toolInvocation.parameters["y"] { fields["y"] = y }
+            guard computerUseDescriptor.advertisesComputerUseAction("scroll") else { return nil }
+            var fields: [String: OpenClawComputerActJSONValue] = [:]
+            if let direction = normalizedScrollDirection(from: toolInvocation.parameters) {
+                fields["scrollDirection"] = .string(direction)
+            }
+            if let scrollAmount = resolvedScrollAmount(from: toolInvocation.parameters) {
+                fields["scrollAmount"] = .int(scrollAmount)
+            }
+            if let xText = toolInvocation.parameters["x"],
+               let yText = toolInvocation.parameters["y"],
+               let xCoordinate = Double(xText),
+               let yCoordinate = Double(yText) {
+                fields["x"] = .double(xCoordinate)
+                fields["y"] = .double(yCoordinate)
+            }
             return computerActPlan(
                 executionIdentifier: executionIdentifier,
                 actionName: "scroll",
@@ -113,15 +171,73 @@ enum OpenClawDexterToolInvokePlanner {
                 shouldCloseComputerActExecution: false,
                 executionIdentifier: executionIdentifier
             )
-        case .fileOperation, .terminalOperation:
+        case .fileOperation:
+            guard let fileAction = toolInvocation.parameters["fileAction"] else { return nil }
+            guard let nodeCommand = OpenClawAdvertisedFileCommandResolver.resolveNodeCommand(
+                advertisedCommands: advertisedCommands,
+                fileAction: fileAction
+            ) else { return nil }
+            var fields: [String: String] = [:]
+            for (fieldKey, fieldValue) in toolInvocation.parameters where fieldKey != "fileAction" {
+                fields[fieldKey] = fieldValue
+            }
+            fields["fileAction"] = fileAction
+            return OpenClawDexterToolInvokePlan(
+                nodeCommand: nodeCommand,
+                parametersJSON: OpenClawNodeParametersJSONBuilder.payload(
+                    executionIdentifier: executionIdentifier,
+                    fields: fields
+                ),
+                shouldCloseComputerActExecution: false,
+                executionIdentifier: executionIdentifier
+            )
+        case .terminalOperation:
             return nil
         }
+    }
+
+    private static func normalizedScrollDirection(from parameters: [String: String]) -> String? {
+        if let direction = parameters["scrollDirection"] ?? parameters["direction"] {
+            let normalized = direction.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["up", "down", "left", "right"].contains(normalized) {
+                return normalized
+            }
+        }
+        if let deltaYText = parameters["deltaY"], let deltaY = Int(deltaYText) {
+            if deltaY > 0 { return "down" }
+            if deltaY < 0 { return "up" }
+        }
+        if let deltaXText = parameters["deltaX"], let deltaX = Int(deltaXText) {
+            if deltaX > 0 { return "right" }
+            if deltaX < 0 { return "left" }
+        }
+        return nil
+    }
+
+    private static func resolvedScrollAmount(from parameters: [String: String]) -> Int? {
+        if let scrollAmountText = parameters["scrollAmount"], let scrollAmount = Int(scrollAmountText) {
+            return max(1, scrollAmount)
+        }
+        if let deltaYText = parameters["deltaY"], let deltaY = Int(deltaYText) {
+            return max(1, abs(deltaY))
+        }
+        if let deltaXText = parameters["deltaX"], let deltaX = Int(deltaXText) {
+            return max(1, abs(deltaX))
+        }
+        return nil
+    }
+
+    private static func resolvedOpenClawApplicationToken(from toolInvocation: DexterToolInvocation) -> String? {
+        if let token = toolInvocation.parameters["openClawApplicationToken"]?.nonEmptyTrimmedValue {
+            return token
+        }
+        return toolInvocation.parameters["applicationName"]?.nonEmptyTrimmedValue
     }
 
     private static func computerActPlan(
         executionIdentifier: String,
         actionName: String,
-        fields: [String: String]
+        fields: [String: OpenClawComputerActJSONValue]
     ) -> OpenClawDexterToolInvokePlan {
         OpenClawDexterToolInvokePlan(
             nodeCommand: DexterOpenClawCapabilityKind.computerAct.rawValue,
@@ -136,9 +252,44 @@ enum OpenClawDexterToolInvokePlanner {
     }
 }
 
+enum OpenClawAdvertisedFileCommandResolver {
+    static func resolveNodeCommand(advertisedCommands: [String], fileAction: String) -> String? {
+        let normalizedAction = fileAction.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalizedAction.isEmpty else { return nil }
+
+        let dottedCandidate = "file.\(normalizedAction)"
+        if advertisedCommands.contains(dottedCandidate) {
+            return dottedCandidate
+        }
+
+        let registeredToolCandidate = "file.\(fileActionRegistrySuffix(for: normalizedAction))"
+        if advertisedCommands.contains(registeredToolCandidate) {
+            return registeredToolCandidate
+        }
+
+        if advertisedCommands.contains("file") {
+            return "file"
+        }
+        return nil
+    }
+
+    private static func fileActionRegistrySuffix(for normalizedAction: String) -> String {
+        switch normalizedAction {
+        case "search": return "search"
+        case "read": return "read"
+        case "create": return "create"
+        case "write": return "write"
+        case "move": return "move"
+        case "rename": return "rename"
+        case "delete": return "delete"
+        default: return normalizedAction
+        }
+    }
+}
+
 enum OpenClawNodeParametersJSONBuilder {
     static func payload(executionIdentifier: String, fields: [String: String]) -> String {
-        var payload: [String: Any] = ["executionId": executionIdentifier]
+        var payload: [String: Any] = ["executionId": executionIdentifier.lowercased()]
         for (fieldKey, fieldValue) in fields {
             payload[fieldKey] = fieldValue
         }

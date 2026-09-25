@@ -34,8 +34,34 @@ struct DexterChatMessage: Identifiable, Equatable, Codable {
 
 struct DexterRecentConversationSummary: Identifiable, Equatable, Codable {
     let id: UUID
-    let title: String
-    let lastUpdated: Date
+    var title: String
+    var lastUpdated: Date
+    var isUnread: Bool
+    var dexterProfileId: UUID
+
+    init(
+        id: UUID,
+        title: String,
+        lastUpdated: Date,
+        isUnread: Bool = false,
+        dexterProfileId: UUID = DexterSeedProfileIdentifier.personal
+    ) {
+        self.id = id
+        self.title = title
+        self.lastUpdated = lastUpdated
+        self.isUnread = isUnread
+        self.dexterProfileId = dexterProfileId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        lastUpdated = try container.decode(Date.self, forKey: .lastUpdated)
+        isUnread = try container.decodeIfPresent(Bool.self, forKey: .isUnread) ?? false
+        dexterProfileId = try container.decodeIfPresent(UUID.self, forKey: .dexterProfileId)
+            ?? DexterSeedProfileIdentifier.personal
+    }
 }
 
 enum DexterMainWindowDestination: Equatable {

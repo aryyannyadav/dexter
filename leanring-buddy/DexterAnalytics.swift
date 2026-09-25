@@ -46,8 +46,51 @@ enum DexterAnalytics {
         PostHogSDK.shared.capture("onboarding_video_completed")
     }
 
-    static func trackOnboardingDemoTriggered() {
-        PostHogSDK.shared.capture("onboarding_demo_triggered")
+    static func trackOnboardingDemoTriggered(kind: String? = nil) {
+        var properties: [String: Any] = [:]
+        if let kind {
+            properties["kind"] = kind
+        }
+        PostHogSDK.shared.capture("onboarding_demo_triggered", properties: properties)
+    }
+
+    static func trackFirstRunOnboardingStepViewed(step: DexterFirstRunOnboardingStep) {
+        PostHogSDK.shared.capture("first_run_onboarding_step", properties: [
+            "step": step.rawValue,
+            "step_name": String(describing: step)
+        ])
+    }
+
+    static func trackOnboardingArchetypeSelected(_ archetypeIdentifier: String) {
+        PostHogSDK.shared.capture("onboarding_archetype_selected", properties: [
+            "archetype": archetypeIdentifier
+        ])
+    }
+
+    static func trackOnboardingWorkspaceSelected(didSelectWorkspace: Bool) {
+        PostHogSDK.shared.capture("onboarding_workspace_selected", properties: [
+            "did_select_workspace": didSelectWorkspace
+        ])
+    }
+
+    static func trackOnboardingPermissionResult(permission: String, granted: Bool) {
+        PostHogSDK.shared.capture("onboarding_permission_result", properties: [
+            "permission": permission,
+            "granted": granted
+        ])
+    }
+
+    static func trackOnboardingCompleted(skipped: Bool) {
+        PostHogSDK.shared.capture("onboarding_completed", properties: [
+            "skipped": skipped
+        ])
+    }
+
+    static func trackPointAskCapture(hasSemanticTarget: Bool, evidenceSources: [String]) {
+        PostHogSDK.shared.capture("point_ask_capture", properties: [
+            "has_semantic_target": hasSemanticTarget,
+            "evidence_sources": evidenceSources
+        ])
     }
 
     // MARK: - Permissions

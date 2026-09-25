@@ -13,6 +13,10 @@ enum DexterOpenClawCapabilityKind: String, Equatable, CaseIterable {
     case screenSnapshot = "screen.snapshot"
     case browserProxy = "browser.proxy"
     case systemRun = "system.run"
+    case file = "file"
+    case canvas = "canvas"
+    case mcp = "mcp"
+    case localInference = "local-inference"
 }
 
 /// Policy-approved tool invocation (never constructed directly by the LLM).
@@ -39,6 +43,7 @@ enum DexterToolKind: Equatable {
     case launchApplication
     case quitApplication
     case focusApplication
+    case listRunningApplications
     case click
     case typeText
     case keyPress
@@ -52,7 +57,7 @@ enum DexterToolKind: Equatable {
 
     var requiredOpenClawCapability: DexterOpenClawCapabilityKind? {
         switch self {
-        case .launchApplication, .quitApplication, .focusApplication, .click, .typeText, .keyPress, .scroll:
+        case .launchApplication, .quitApplication, .focusApplication, .listRunningApplications, .click, .typeText, .keyPress, .scroll:
             return .computerAct
         case .screenSnapshot, .screenObservation:
             return .screenSnapshot
@@ -60,7 +65,9 @@ enum DexterToolKind: Equatable {
             return .browserProxy
         case .systemRun:
             return .systemRun
-        case .fileOperation, .terminalOperation:
+        case .fileOperation:
+            return .file
+        case .terminalOperation:
             return nil
         }
     }
@@ -87,6 +94,8 @@ enum DexterTool {
             return nonEmptyApplicationName(from: actionRequest) != nil ? .quitApplication : nil
         case DexterActionType.focusApplication.rawValue:
             return nonEmptyApplicationName(from: actionRequest) != nil ? .focusApplication : nil
+        case DexterActionType.listRunningApplications.rawValue:
+            return .listRunningApplications
         case DexterActionType.click.rawValue:
             if browserAction == "click" { return .browserInteraction }
             let xCoordinate = actionRequest.parameters["x"] ?? ""
@@ -158,6 +167,7 @@ enum DexterTool {
         case .launchApplication: return DexterRegisteredToolName.applicationLaunch.rawValue
         case .quitApplication: return DexterRegisteredToolName.applicationQuit.rawValue
         case .focusApplication: return DexterRegisteredToolName.applicationFocus.rawValue
+        case .listRunningApplications: return DexterRegisteredToolName.applicationListRunning.rawValue
         case .click: return DexterRegisteredToolName.mouseClick.rawValue
         case .typeText: return DexterRegisteredToolName.keyboardType.rawValue
         case .keyPress: return DexterRegisteredToolName.keyboardPress.rawValue

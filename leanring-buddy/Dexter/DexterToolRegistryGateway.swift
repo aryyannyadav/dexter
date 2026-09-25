@@ -9,6 +9,7 @@ import Foundation
 /// Single entry point: registry metadata, validation, and execution via the existing OpenClaw tool gateway.
 final class DexterToolRegistryGateway {
     private let toolGateway: DexterToolGateway
+    private let unifiedToolGateway: DexterUnifiedToolGateway
     private let localEnvironment: OpenClawLocalEnvironmentProviding
     private let permissionSnapshotProvider: () -> DexterPermissionSnapshot
 
@@ -18,8 +19,23 @@ final class DexterToolRegistryGateway {
         permissionSnapshotProvider: @escaping () -> DexterPermissionSnapshot = DexterToolRegistryGateway.makeDefaultPermissionSnapshot
     ) {
         self.toolGateway = toolGateway
+        self.unifiedToolGateway = DexterUnifiedToolGateway(toolGateway: toolGateway)
         self.localEnvironment = localEnvironment
         self.permissionSnapshotProvider = permissionSnapshotProvider
+    }
+
+    func productCapabilityBuildInput(integrations: [DexterIntegration] = []) async -> DexterProductCapabilityBuildInput {
+        let discoveryReport = await toolGateway.discoverCapabilities()
+        let permissionSnapshot = permissionSnapshotProvider()
+        return DexterProductCapabilityBuildInput(
+            discoveryReport: discoveryReport,
+            gatewayConnected: discoveryReport.gatewayConnected,
+            hasAccessibilityPermission: permissionSnapshot.hasAccessibilityPermission,
+            hasScreenRecordingPermission: permissionSnapshot.hasScreenRecordingPermission,
+            hasMicrophonePermission: permissionSnapshot.hasMicrophonePermission,
+            hasScreenContentPermission: permissionSnapshot.hasScreenContentPermission,
+            integrations: integrations
+        )
     }
 
     func availableToolDefinitions() async -> [DexterRegisteredToolDefinition] {
@@ -73,12 +89,45 @@ final class DexterToolRegistryGateway {
                 return .dispatchFailed(message: "Could not map registered tool to execution.", rawOutput: nil)
             }
 
+            let context = await buildAvailabilityContext()
+            if shouldExecuteThroughOpenClaw(definition: definition, toolInvocation: toolInvocation, context: context) {
+                return await routeThroughUnifiedGateway(toolInvocation: toolInvocation)
+            }
+
             if definition.runtime == .localMac {
                 return await executeLocalTool(toolInvocation: toolInvocation)
             }
 
-            return await toolGateway.execute(toolInvocation: toolInvocation)
+            return await routeThroughUnifiedGateway(toolInvocation: toolInvocation)
         }
+    }
+
+    private func routeThroughUnifiedGateway(toolInvocation: DexterToolInvocation) async -> DexterToolGatewayOutcome {
+        switch toolInvocation.toolKind {
+        case .launchApplication, .quitApplication, .focusApplication, .listRunningApplications,
+             .click, .typeText, .keyPress, .scroll:
+            return await unifiedToolGateway.executeComputerAction(toolInvocation: toolInvocation)
+        case .browserInteraction:
+            return await unifiedToolGateway.executeBrowserAction(toolInvocation: toolInvocation)
+        case .screenSnapshot, .screenObservation:
+            return await unifiedToolGateway.executeScreenAction(toolInvocation: toolInvocation)
+        case .systemRun:
+            return await unifiedToolGateway.executeSystemAction(toolInvocation: toolInvocation)
+        case .fileOperation:
+            return await unifiedToolGateway.executeFileAction(toolInvocation: toolInvocation)
+        case .terminalOperation:
+            return await executeLocalTool(toolInvocation: toolInvocation)
+        }
+    }
+
+    private func shouldExecuteThroughOpenClaw(
+        definition: DexterRegisteredToolDefinition,
+        toolInvocation: DexterToolInvocation,
+        context: DexterToolRegistryAvailabilityContext
+    ) -> Bool {
+        guard definition.runtime == .localMac else { return false }
+        guard toolInvocation.toolKind == .fileOperation else { return false }
+        return context.discoveryReport.isCapabilityAvailable(.file)
     }
 
     func cancelInFlightExecution() async -> DexterToolGatewayCancellationResult {

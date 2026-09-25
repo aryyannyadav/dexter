@@ -27,7 +27,14 @@ enum OpenClawRuntimeAllowlist {
         guard let capability = toolInvocation.toolKind.requiredOpenClawCapability else {
             return false
         }
-        return discoveryReport.isCapabilityAvailable(capability)
+        guard discoveryReport.isCapabilityAvailable(capability) else { return false }
+        if DexterOpenClawApplicationLifecycleCapabilities.isApplicationLifecycleToolKind(toolInvocation.toolKind) {
+            return DexterOpenClawApplicationLifecycleCapabilities.supportsToolExecution(
+                toolKind: toolInvocation.toolKind,
+                computerUseDescriptor: nodeSnapshot.computerUseDescriptor
+            )
+        }
+        return true
     }
 
     /// Lifecycle and pointer actions should route through OpenClaw before MacDexter when the node can execute them.
@@ -36,10 +43,12 @@ enum OpenClawRuntimeAllowlist {
             return false
         }
         switch toolKind {
-        case .launchApplication, .quitApplication, .focusApplication, .click, .typeText, .keyPress, .scroll,
+        case .launchApplication, .quitApplication, .focusApplication, .listRunningApplications, .click, .typeText, .keyPress, .scroll,
              .browserInteraction, .screenSnapshot, .screenObservation, .systemRun:
             return true
-        case .fileOperation, .terminalOperation:
+        case .fileOperation:
+            return true
+        case .terminalOperation:
             return false
         }
     }

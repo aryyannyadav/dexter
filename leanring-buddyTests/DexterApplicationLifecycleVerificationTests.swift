@@ -173,6 +173,104 @@ struct DexterApplicationLifecycleVerificationTests {
         #expect(!outcome.spokenSummary.lowercased().contains("verified"))
     }
 
+    @Test @MainActor func lifecycleActionFactoryResolvesInstalledApplicationDisplayName() {
+        let quitAction = DexterActionFactory.quitApplication(named: "calculator")
+        #expect(quitAction.parameters["expectedOutcome"] == DexterExpectedOutcome.applicationNotRunning.rawValue)
+        #expect(quitAction.parameters["verificationStrategy"] == DexterActionVerificationStrategyKind.applicationState.rawValue)
+        if DexterInstalledApplicationLauncher.isApplicationInstalled(named: "Calculator") {
+            #expect(quitAction.parameters["applicationName"] == "Calculator")
+            #expect(quitAction.parameters["bundleIdentifier"] == "com.apple.calculator")
+        }
+    }
+
+    @Test @MainActor func pipelineOpenClawDispatchFailureDoesNotMarkActionCompleted() async throws {
+        let probe = ConfigurableDexterApplicationLifecycleVerificationProbe()
+        probe.signalsByApplicationName[genericApplicationName] = notRunningSignals()
+        let originalProbe = DexterActionVerificationEngine.applicationLifecycleProbe
+        DexterActionVerificationEngine.applicationLifecycleProbe = probe
+        defer { DexterActionVerificationEngine.applicationLifecycleProbe = originalProbe }
+
+        let proposedAction = DexterActionFactory.openApplication(named: genericApplicationName)
+        let failedDispatchMessage = "I couldn't open \(genericApplicationName) because the computer action failed. OpenClaw node invoke failed. Nothing was marked complete."
+        let outcome = await DexterActionExecutionPipeline.execute(
+            proposedAction: proposedAction,
+            context: DexterContext(userMessage: DexterUserMessageContext(text: "Open SampleTargetApplication.")),
+            permissionManager: StubPermissionManager(
+                snapshot: DexterPermissionSnapshot(
+                    hasAccessibilityPermission: true,
+                    hasScreenRecordingPermission: false,
+                    hasMicrophonePermission: false,
+                    hasScreenContentPermission: true
+                )
+            ),
+            contextObserver: StubDexterActionContextObserver(),
+            agentRuntime: TestRecordingAgentRuntime(
+                result: AgentActionResult(
+                    reportedSuccess: false,
+                    message: failedDispatchMessage,
+                    executionStatus: .failed,
+                    runtimeTaskIdentifier: nil,
+                    rawOutput: "{\"code\":\"INVOKE_FAILED\"}"
+                )
+            ),
+            actionVerifier: ObservingActionVerifier(),
+            actionStore: InMemoryDexterActionStore(),
+            actionHistoryStore: InMemoryDexterActionHistoryStore(),
+            actionPermissionSettings: DexterActionPermissionSettings(autoApproveLowRiskActions: true),
+            hasPersistedScreenContentGrant: true
+        )
+
+        #expect(outcome.action.state == .verificationFailed)
+        #expect(outcome.verificationReport?.status == .failed)
+        #expect(outcome.spokenSummary.contains("Nothing was marked complete"))
+        #expect(outcome.executionSnapshot?.currentPhase == .failed)
+        #expect(DexterTurnOutcomeResolver.resolveAfterApprovedActionExecution(outcome: outcome) == .error)
+    }
+
+    @Test @MainActor func pipelineRecordsRuntimeExecutionIdentifierOnTurnRecord() async throws {
+        let probe = ConfigurableDexterApplicationLifecycleVerificationProbe()
+        probe.signalsByApplicationName[genericApplicationName] = notRunningSignals()
+        let originalProbe = DexterActionVerificationEngine.applicationLifecycleProbe
+        DexterActionVerificationEngine.applicationLifecycleProbe = probe
+        defer { DexterActionVerificationEngine.applicationLifecycleProbe = originalProbe }
+
+        let proposedAction = DexterActionFactory.quitApplication(named: genericApplicationName)
+        let outcome = await DexterActionExecutionPipeline.execute(
+            proposedAction: proposedAction,
+            context: DexterContext(userMessage: DexterUserMessageContext(text: "Quit SampleTargetApplication.")),
+            permissionManager: StubPermissionManager(
+                snapshot: DexterPermissionSnapshot(
+                    hasAccessibilityPermission: true,
+                    hasScreenRecordingPermission: false,
+                    hasMicrophonePermission: false,
+                    hasScreenContentPermission: true
+                )
+            ),
+            contextObserver: StubDexterActionContextObserver(),
+            agentRuntime: TestRecordingAgentRuntime(
+                result: AgentActionResult(
+                    reportedSuccess: true,
+                    message: "dispatch only",
+                    executionStatus: .succeeded,
+                    runtimeTaskIdentifier: "00000000-0000-4000-8000-000000000099",
+                    rawOutput: "ok"
+                )
+            ),
+            actionVerifier: ObservingActionVerifier(),
+            actionStore: InMemoryDexterActionStore(),
+            actionHistoryStore: InMemoryDexterActionHistoryStore(),
+            actionPermissionSettings: DexterActionPermissionSettings(autoApproveLowRiskActions: true),
+            hasPersistedScreenContentGrant: true,
+            confirmationGrant: DexterActionConfirmationGrant(
+                actionId: proposedAction.id,
+                riskLevelAtApprovalTime: .highRisk
+            )
+        )
+
+        #expect(outcome.turnRecord?.runtimeExecutionIdentifier == "00000000-0000-4000-8000-000000000099")
+        #expect(outcome.action.state == .completed)
+    }
+
     @Test @MainActor func runtimeExecutionGuardTimesOutLongRunningActions() async throws {
         let hangingRuntime = HangingAgentRuntime()
         let actionRequest = AgentActionRequest(

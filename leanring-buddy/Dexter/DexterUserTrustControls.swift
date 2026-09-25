@@ -22,6 +22,7 @@ enum DexterUserTrustControls {
         var settings = actionPermissionSettingsStore.currentSettings
         settings.autoApproveLowRiskActions = false
         actionPermissionSettingsStore.currentSettings = settings
+        actionPermissionSettingsStore.isComputerControlAuthorizedForSession = false
     }
 
     static func revokeProactiveAutomations(settingsStore: DexterProactiveAutomationSettingsStore) {

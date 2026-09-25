@@ -9,40 +9,62 @@ struct DexterContextIndicator: View {
     let uiState: DexterScreenContextUIState
     var contextualLabel: String?
     var compact: Bool = false
+    var ultraCompact: Bool = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(indicatorColor)
-                .frame(width: 7, height: 7)
-                .accessibilityHidden(true)
+        HStack(spacing: DexterMetrics.space6) {
+            DexterStatusDot(tone: indicatorTone, showsSoftGlow: indicatorTone == .active && !ultraCompact)
 
-            Text(displayLabel)
-                .font(compact ? DexterIdentity.Typography.monoCaption() : DexterIdentity.Typography.body())
-                .foregroundColor(DS.Colors.textSecondary)
-                .lineLimit(compact ? 1 : 2)
+            if !ultraCompact {
+                Text(displayLabel)
+                    .font(compact ? DexterTypography.caption() : DexterTypography.secondary())
+                    .foregroundColor(DexterColors.textSecondary)
+                    .lineLimit(compact ? 1 : 2)
+            }
+        }
+        .padding(.horizontal, compact ? DexterMetrics.space8 : 0)
+        .padding(.vertical, compact ? DexterMetrics.space4 : 0)
+        .background {
+            if compact {
+                Capsule(style: .continuous)
+                    .fill(DexterColors.inputBackground.opacity(0.85))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(DexterColors.borderSubtle, lineWidth: 1)
+                    )
+            }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(displayLabel)
+        .accessibilityLabel(ultraCompact ? uiState.userFacingLabel : displayLabel)
     }
 
     private var displayLabel: String {
         if let contextualLabel, !contextualLabel.isEmpty {
-            return contextualLabel
+            return compactLabel(contextualLabel)
         }
-        return uiState.userFacingLabel
+        return compactLabel(uiState.userFacingLabel)
     }
 
-    private var indicatorColor: Color {
+    private func compactLabel(_ rawLabel: String) -> String {
+        let normalized = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if ultraCompact {
+            if normalized.lowercased().contains("screen") { return "Screen" }
+            if normalized.lowercased().contains("ready") { return "Ready" }
+            if normalized.lowercased().contains("analyzing") { return "Analyzing" }
+        }
+        return normalized.uppercased()
+    }
+
+    private var indicatorTone: DexterStatusDot.Tone {
         switch uiState {
         case .ready:
-            return DexterIdentity.accent
+            return .success
         case .analyzingScreen:
-            return DexterIdentity.accentSecondary
+            return .active
         case .permissionRequired:
-            return DS.Colors.destructiveText.opacity(0.85)
+            return .warning
         case .unavailable:
-            return DS.Colors.textTertiary.opacity(0.5)
+            return .neutral
         }
     }
 }

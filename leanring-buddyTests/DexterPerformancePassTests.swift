@@ -7,11 +7,78 @@ import Foundation
 import Testing
 @testable import leanring_buddy
 
+struct DexterCursorAccentColorTests {
+    @Test func cursorAccentColorOptionsIncludePastelPinkInDisplayOrder() {
+        let options = DexterCursorAccentColorOption.allCases
+        #expect(options.count == 6)
+        #expect(options.map(\.displayName) == [
+            "Red",
+            "Companion Sky",
+            "Yellow",
+            "Green",
+            "Pastel Pink",
+            "Companion Lavender"
+        ])
+    }
+
+    @Test func cursorAccentColorPersistenceRoundTripsThroughRawValue() {
+        for option in DexterCursorAccentColorOption.allCases {
+            #expect(DexterCursorAccentColorOption(rawValue: option.rawValue) == option)
+            #expect(!option.overlayTintHex.isEmpty)
+        }
+        #expect(DexterCursorAccentColorOption.pastelPink.overlayTintHex == "#F2B5C6")
+    }
+}
+
 struct DexterPerformancePassTests {
     @Test func trivialClassifierSkipsHeavyContextPaths() {
         #expect(DexterTrivialQuestionClassifier.isTrivialQuestion("what is a struct in Swift"))
         #expect(!DexterTrivialQuestionClassifier.isTrivialQuestion("what is this button on my screen"))
         #expect(!DexterTrivialQuestionClassifier.isTrivialQuestion("remember that I prefer dark mode"))
+    }
+
+    @Test func fastRequestRouterUsesFastChatForGreetingsAndConcepts() {
+        let helloRoute = DexterFastRequestRouter.route(userMessage: "hey")
+        #expect(helloRoute.route == .fastChat)
+        #expect(!helloRoute.requiresScreenCapture)
+        #expect(helloRoute.contextPerformanceProfile == .minimal)
+
+        let polymorphismRoute = DexterFastRequestRouter.route(userMessage: "what is polymorphism?")
+        #expect(polymorphismRoute.route == .fastChat)
+        #expect(!polymorphismRoute.requiresScreenCapture)
+
+        let conceptRoute = DexterFastRequestRouter.route(userMessage: "explain this concept")
+        #expect(conceptRoute.route == .fastChat)
+        #expect(!conceptRoute.requiresScreenCapture)
+    }
+
+    @Test func fastRequestRouterUsesScreenContextForVisualQuestions() {
+        let screenRoute = DexterFastRequestRouter.route(userMessage: "what is on my screen?")
+        #expect(screenRoute.route == .screenContext)
+        #expect(screenRoute.requiresScreenCapture)
+
+        let deicticRoute = DexterFastRequestRouter.route(userMessage: "what is this button?")
+        #expect(deicticRoute.route == .screenContext)
+        #expect(deicticRoute.requiresScreenCapture)
+    }
+
+    @Test func fastRequestRouterUsesComputerActionWithoutScreenCapture() {
+        let openRoute = DexterFastRequestRouter.route(userMessage: "Open WhatsApp")
+        #expect(openRoute.route == .computerAction)
+        #expect(!openRoute.requiresScreenCapture)
+
+        let explainConstructorsRoute = DexterFastRequestRouter.route(userMessage: "explain constructors.")
+        #expect(explainConstructorsRoute.route == .fastChat)
+        #expect(!explainConstructorsRoute.requiresScreenCapture)
+    }
+
+    @Test func fastRequestRouterDetectsIntegrationAndTeachingRoutes() {
+        let integrationRoute = DexterFastRequestRouter.route(userMessage: "check my Gmail")
+        #expect(integrationRoute.route == .integrationAgent)
+
+        let teachingRoute = DexterFastRequestRouter.route(userMessage: "walk me through this settings panel")
+        #expect(teachingRoute.route == .teaching)
+        #expect(teachingRoute.requiresScreenCapture)
     }
 
     @Test func conversationPackagingUsesSummaryPlusRecentMessages() {

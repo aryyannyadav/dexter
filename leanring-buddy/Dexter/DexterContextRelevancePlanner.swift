@@ -20,12 +20,7 @@ struct DexterContextRelevancePlan: Equatable {
 
 enum DexterContextRelevancePlanner {
     static func shouldRequestScreenCapture(forUserMessage userMessage: String) -> Bool {
-        let normalizedMessage = userMessage.lowercased()
-        return matchesVisualDeictic(normalizedMessage)
-            || matchesWhatIsThis(normalizedMessage)
-            || matchesExplainWindow(normalizedMessage)
-            || matchesHypotheticalControlQuestion(normalizedMessage)
-            || matchesErrorDebugging(normalizedMessage)
+        DexterFastRequestRouter.requiresScreenContext(forUserMessage: userMessage)
     }
 
     static func shouldSkipScreenCapture(forUserMessage userMessage: String) -> Bool {
@@ -179,6 +174,14 @@ enum DexterContextRelevancePlanner {
 
     static func matchesErrorDebuggingPublic(_ normalizedMessage: String) -> Bool {
         matchesErrorDebugging(normalizedMessage)
+    }
+
+    static func matchesExplainWindowPublic(_ normalizedMessage: String) -> Bool {
+        matchesExplainWindow(normalizedMessage)
+    }
+
+    static func matchesHypotheticalControlQuestionPublic(_ normalizedMessage: String) -> Bool {
+        matchesHypotheticalControlQuestion(normalizedMessage)
     }
 
     private static func matchesWhatIsThis(_ normalizedMessage: String) -> Bool {

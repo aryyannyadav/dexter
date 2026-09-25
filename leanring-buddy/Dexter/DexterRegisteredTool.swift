@@ -11,6 +11,7 @@ enum DexterRegisteredToolName: String, Equatable, CaseIterable {
     case applicationLaunch = "application.launch"
     case applicationQuit = "application.quit"
     case applicationFocus = "application.focus"
+    case applicationListRunning = "application.list_running"
     case mouseClick = "mouse.click"
     case keyboardType = "keyboard.type"
     case keyboardPress = "keyboard.press"

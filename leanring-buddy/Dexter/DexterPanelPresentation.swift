@@ -9,6 +9,8 @@ enum DexterPanelVoiceActivationLabel: String, Equatable {
     case ready = "Voice ready"
     case pushToTalkDisabled = "Push-to-talk off"
     case listening = "Listening"
+    case transcribing = "Transcribing"
+    case voiceError = "Voice error"
     case thinking = "Thinking"
     case speaking = "Speaking"
     case setup = "Setup required"
@@ -47,10 +49,14 @@ enum DexterPanelPresentation {
             return .ready
         case .listening:
             return .listening
+        case .transcribing:
+            return .transcribing
         case .thinking:
             return .thinking
         case .speaking:
             return .speaking
+        case .error:
+            return .voiceError
         }
     }
 
@@ -65,12 +71,12 @@ enum DexterPanelPresentation {
             return .executing
         case .completed:
             return .completed
+        case .verificationFailed:
+            return .verificationUncertain
         case .failed:
             return .failed
         case .cancelled:
             return .cancelled
-        case .verificationFailed:
-            return .verificationUncertain
         }
     }
 

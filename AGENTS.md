@@ -11,7 +11,7 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 
 ## Architecture
 
-- **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
+- **App Type**: Regular macOS app (Dock + Dexter Home window); menu bar status item for quick companion access
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
 - **AI Chat**: `DexterModelGateway` routes by capability (TEXT / VISION / REASONING / FAST / LOCAL) across local Ollama (`qwen3.5:9b` text, `qwen3.5:4b` vision, `think=false`), Claude via Worker proxy, and optional OpenAI; fallbacks on real failures only
@@ -54,7 +54,10 @@ App Info.plist (optional, no secrets in git): `DexterWorkerBaseURL`, `DexterProx
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
+| `leanring_buddyApp.swift` | ~105 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager`, first-run onboarding window, and starts `CompanionManager`. Opens `DexterFirstRunOnboardingWindowManager` on first launch; otherwise menu bar panel when permissions are missing. |
+| `Dexter/DexterFirstRunOnboardingStore.swift` | ~85 | Five-step product onboarding state (welcome → capabilities → permissions → voice try → point teach). |
+| `UI/Onboarding/DexterFirstRunOnboardingView.swift` | ~520 | Polished first-run UI (not a settings wizard); live permission rows and PTT/point try steps. |
+| `UI/Onboarding/DexterFirstRunOnboardingWindowManager.swift` | ~95 | Dedicated welcome window; finishes into Dexter Home via `dexterOpenMainWindow`. |
 | `CompanionManager.swift` | ~1050 | Central UI state machine; wires **Dexter Voice** (PTT, STT, streamed text, optional TTS) via `DexterVoiceCoordinator`. Delegates model/context to `DexterOrchestrator`. |
 | `Dexter/DexterVoiceCoordinator.swift` | ~125 | Listening / thinking / speaking lifecycle; PTT capture after interruption. |
 | `Dexter/DexterCoreExecutionPipeline.swift` | ~40 | Shared PTT→STT→core runtime→TTS phase labels (`DexterUserInputChannel`). |
@@ -190,8 +193,12 @@ App Info.plist (optional, no secrets in git): `DexterWorkerBaseURL`, `DexterProx
 | `Dexter/DexterToolRegistryGateway.swift` | ~95 | Single gateway: list tools, reject unknown/unavailable proposals, execute via existing `DexterToolGateway`. |
 | `Dexter/DexterRegisteredToolRouter.swift` | ~130 | Maps registered tool proposals to `DexterToolInvocation` for OpenClaw dispatch. |
 | `Dexter/DexterToolGateway.swift` | ~60 | Tool Gateway protocol and structured unavailable/dispatch outcomes. |
-| `Dexter/OpenClawDexterToolGatewayAdapter.swift` | ~150 | OpenClaw Tool Gateway: capability discovery + `computer.act` / `screen.snapshot` / `browser.proxy` / `system.run`. |
-| `Dexter/DexterOpenClawCapabilityDiscovery.swift` | ~100 | Runtime capability matrix for connected OpenClaw nodes. |
+| `Dexter/OpenClawDexterToolGatewayAdapter.swift` | ~150 | OpenClaw Tool Gateway: capability discovery + `computer.act` / `screen.snapshot` / `browser.proxy` / `system.run` / advertised `file.*` (no assumed computer-use actions). |
+| `Dexter/DexterUnifiedToolGateway.swift` | ~90 | Domain facade (`executeComputerAction`, `executeBrowserAction`, …) over `DexterToolGateway` — views never call OpenClaw directly. |
+| `Dexter/DexterOpenClawRuntimeCapabilityRegistry.swift` | ~90 | Runtime capability registry + Settings rows from gateway/node discovery only. |
+| `Dexter/DexterOpenClawStructuredFailure.swift` | ~70 | Structured OpenClaw failure codes → honest user-facing messages (e.g. `COMPUTER_UNSUPPORTED_ACTION`). |
+| `Dexter/DexterOpenClawCapabilityDiscovery.swift` | ~130 | Runtime capability matrix (computer, screen, browser, system, file, canvas, MCP, local-inference) for connected nodes. |
+| `UI/Settings/DexterOpenClawRuntimeStatusSection.swift` | ~90 | Settings UI: OpenClaw version, gateway/node status, detected capabilities only. |
 | `Dexter/OpenClawDexterToolInvokePlan.swift` | ~120 | Maps `DexterToolInvocation` to OpenClaw node invoke plans. |
 | `Dexter/DexterBrowserState.swift` | ~145 | Browser state snapshot (URL, title, page identity, text, selection, task) + runtime JSON parsing. |
 | `Dexter/DexterBrowserIntelligencePlanner.swift` | ~140 | ACT-mode utterances → browser actions (`open` / `search` / `read` / `click` / `type` / `back` / `forward`) for OpenClaw `browser.proxy`. |
@@ -236,6 +243,11 @@ App Info.plist (optional, no secrets in git): `DexterWorkerBaseURL`, `DexterProx
 | `DexterUIComponents.swift` | ~320 | Dexter cards, voice indicators, chat, execution/verification UI. |
 | `Dexter/DexterVisualIdentity.swift` | ~40 | Signal-cyan brand tokens on graphite (`DS` surfaces). |
 | `Dexter/DexterPanelPresentation.swift` | ~90 | View-model labels for voice/action/task UI (testable). |
+| `UI/Notch/DexterNotchPanelManager.swift` | ~160 | Ambient notch `NSPanel` (status bar level), chrome sizing, escape dismiss, wires attention + recommendation stores. |
+| `UI/Notch/DexterNotchPresenceView.swift` | ~420 | Notch SwiftUI: compact / hover / expanded; recommendation cards with primary/secondary actions. |
+| `UI/Notch/DexterNotchRecommendationEngine.swift` | ~360 | Priority resolver (HIGH permission/active/failure/completion → MEDIUM suggestions → LOW idle) from live Dexter events only. |
+| `UI/Notch/DexterNotchRecommendationStore.swift` | ~175 | Subscribes to runtime, voice, confirmations, chat, profile suggestions, integrations; drives `@Published` notch recommendation. |
+| `UI/Notch/DexterNotchState.swift` | ~140 | Notch chrome modes, activity phase resolver, dynamic panel sizing with recommendations. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |

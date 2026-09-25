@@ -78,8 +78,12 @@ enum DexterToolRegistry {
         switch definition.name {
         case .screenCapture:
             return context.hasScreenRecordingPermission
-        case .fileSearch, .fileRead, .fileCreate, .fileWrite, .fileMove, .fileRename, .fileDelete,
-             .terminalInspect, .terminalRun, .terminalCaptureOutput:
+        case .fileSearch, .fileRead, .fileCreate, .fileWrite, .fileMove, .fileRename, .fileDelete:
+            if context.discoveryReport.isCapabilityAvailable(.file) {
+                return context.isOpenClawInstalled && context.discoveryReport.nodeConnected
+            }
+            return true
+        case .terminalInspect, .terminalRun, .terminalCaptureOutput:
             return true
         default:
             return false
@@ -98,6 +102,26 @@ enum DexterToolRegistry {
         }
 
         guard let capability = definition.requiredOpenClawCapability else { return false }
-        return context.discoveryReport.isCapabilityAvailable(capability)
+        guard context.discoveryReport.isCapabilityAvailable(capability) else { return false }
+
+        let toolKind = openClawToolKind(for: definition.name)
+        if let toolKind,
+           DexterOpenClawApplicationLifecycleCapabilities.isApplicationLifecycleToolKind(toolKind) {
+            return DexterOpenClawApplicationLifecycleCapabilities.supportsToolExecution(
+                toolKind: toolKind,
+                computerUseDescriptor: context.discoveryReport.computerUseDescriptor
+            )
+        }
+        return true
+    }
+
+    private static func openClawToolKind(for toolName: DexterRegisteredToolName) -> DexterToolKind? {
+        switch toolName {
+        case .applicationLaunch: return .launchApplication
+        case .applicationQuit: return .quitApplication
+        case .applicationFocus: return .focusApplication
+        case .applicationListRunning: return .listRunningApplications
+        default: return nil
+        }
     }
 }

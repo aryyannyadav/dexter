@@ -48,8 +48,15 @@ final class DexterVoiceCoordinator: ObservableObject {
         streamingResponseText = ""
     }
 
+    /// Accepts either incremental deltas (Ollama) or full accumulated text (Claude SSE).
     func appendStreamingResponseChunk(_ chunk: String) {
-        streamingResponseText += chunk
+        guard !chunk.isEmpty else { return }
+        if chunk.count >= streamingResponseText.count,
+           chunk.hasPrefix(streamingResponseText) {
+            streamingResponseText = chunk
+        } else {
+            streamingResponseText += chunk
+        }
     }
 
     func recordAssistantResponse(_ text: String) {
@@ -69,6 +76,20 @@ final class DexterVoiceCoordinator: ObservableObject {
         interactionState = .idle
     }
 
+    func transitionToTranscribing() {
+        interactionState = .transcribing
+    }
+
+    func transitionToError() {
+        interactionState = .error
+    }
+
+    func clearVoiceInputError() {
+        if interactionState == .error {
+            interactionState = .idle
+        }
+    }
+
     /// Called when the user interrupts (new PTT press or cancel). Stops treating speaking/thinking as blocking dictation UI.
     func handleUserInterruption() {
         if interactionState == .speaking || interactionState == .thinking {
@@ -78,6 +99,9 @@ final class DexterVoiceCoordinator: ObservableObject {
 
     /// Natural turn-taking: user takes the floor — end assistant speaking/thinking before mic capture.
     func prepareForPushToTalkCapture() {
+        if interactionState == .error {
+            interactionState = .idle
+        }
         handleUserInterruption()
     }
 
@@ -93,9 +117,18 @@ final class DexterVoiceCoordinator: ObservableObject {
             return
         }
 
-        // Chat "thinking" is owned by the orchestrator response task — not STT finalize/prepare.
+        // Orchestrator "thinking" owns the panel until STT finishes or a new recording starts.
+        if interactionState == .thinking {
+            if isRecording || isPreparing {
+                interactionState = .listening
+            }
+            return
+        }
+
         if isRecording || isPreparing {
             interactionState = .listening
+        } else if isFinalizing {
+            interactionState = .transcribing
         } else if interactionState == .listening {
             interactionState = .idle
         }

@@ -91,21 +91,17 @@ enum DS {
         // ── Accent (derived from blue scale) ───────────────────────
         // The primary fill is Blue 600; hover darkens to Blue 700.
 
-        /// Accent fill — used for solid button backgrounds.
-        /// #2563eb → ~5.1:1 contrast with white text (WCAG AA).
-        static let accent = blue600
+        /// Accent fill — companion lavender (menu bar / legacy DS controls).
+        static let accent = Color(hex: "#8B5CF6")
 
-        /// Accent hover — slightly darker blue for hover state.
-        /// #1d4ed8 → ~6.5:1 contrast with white text (WCAG AA+).
-        static let accentHover = blue700
+        /// Accent hover — slightly deeper violet.
+        static let accentHover = Color(hex: "#7C3AED")
 
-        /// Accent text — bright blue used for accent-colored text and icons
-        /// on dark backgrounds (links, active nav items, highlighted labels).
-        static let accentText = blue400
+        /// Accent text — soft lavender on dark backgrounds.
+        static let accentText = Color(hex: "#C4B5FD")
 
-        /// Very subtle accent tint — used for selected item backgrounds (e.g. current step
-        /// in the sidebar). Low opacity so it doesn't overpower.
-        static let accentSubtle = blue500.opacity(0.10)
+        /// Very subtle accent tint for selected rows.
+        static let accentSubtle = Color(hex: "#C4B5FD").opacity(0.12)
 
         // ── Semantic Colors ──────────────────────────────────────────
 

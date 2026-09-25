@@ -62,4 +62,72 @@ struct DexterMemoryEngineTests {
         }
         #expect(summary.contains("dark mode"))
     }
+
+    @Test func dexterScopedMemoryDoesNotLeakAcrossProfiles() {
+        let memoryStore = DefaultMemoryStore.inMemoryForTesting()
+        let builderId = UUID()
+        let studyId = UUID()
+
+        memoryStore.currentMemoryBinding = .forDexterProfile(builderId)
+        memoryStore.saveStructuredMemoryRecord(
+            DexterStructuredMemoryRecord.explicitSemantic(
+                content: "Uses VS Code for projects.",
+                title: "Editor",
+                binding: .forDexterProfile(builderId)
+            )
+        )
+
+        memoryStore.currentMemoryBinding = .forDexterProfile(studyId)
+        let studyMemories = memoryStore.structuredMemories(forProfileId: studyId)
+        #expect(studyMemories.contains { $0.content.contains("VS Code") } == false)
+
+        let builderMemories = memoryStore.structuredMemories(forProfileId: builderId)
+        #expect(builderMemories.contains { $0.content.contains("VS Code") } == true)
+    }
+
+    @Test func scopedRetrievalPrefersRelevantProfileMemory() {
+        let memoryStore = DefaultMemoryStore.inMemoryForTesting()
+        let profileId = UUID()
+        memoryStore.saveStructuredMemoryRecord(
+            DexterStructuredMemoryRecord.explicitSemantic(
+                content: "Project uses SwiftUI.",
+                title: "Stack",
+                binding: .forDexterProfile(profileId)
+            )
+        )
+        memoryStore.saveStructuredMemoryRecord(
+            DexterStructuredMemoryRecord.explicitSemantic(
+                content: "Unrelated gardening tips.",
+                title: "Garden",
+                binding: .global
+            )
+        )
+
+        let context = DexterMemoryRetrievalContext(
+            activeDexterProfileId: profileId,
+            activeFileWorkspaceId: nil
+        )
+        let retrieved = memoryStore.persistentMemoryContext(
+            forQuery: "SwiftUI project",
+            limit: 3,
+            retrievalContext: context
+        )
+        #expect(retrieved.retrievedMemories.contains { $0.content.contains("SwiftUI") })
+        #expect(retrieved.retrievedMemories.contains { $0.content.contains("gardening") } == false)
+    }
+
+    @Test func editMemoryUpdatesContentForRetrieval() {
+        let memoryStore = DefaultMemoryStore.inMemoryForTesting()
+        let record = DexterStructuredMemoryRecord.explicitPreference(
+            content: "Concise answers",
+            title: "Style",
+            binding: .global
+        )
+        memoryStore.saveStructuredMemoryRecord(record)
+        #expect(memoryStore.updateStructuredMemoryContent(memoryId: record.id, newContent: "Detailed answers"))
+
+        let active = memoryStore.allStructuredMemories().filter { $0.status == .active }
+        #expect(active.count == 1)
+        #expect(active.first?.content == "Detailed answers")
+    }
 }

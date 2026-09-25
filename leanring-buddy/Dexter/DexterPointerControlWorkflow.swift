@@ -29,6 +29,21 @@ enum DexterPointerControlWorkflow {
         return imperativePhrases.contains(normalizedUserMessage)
     }
 
+    static func matchesPointerTeachIntent(normalizedUserMessage: String) -> Bool {
+        let teachPhrases = [
+            "how do i use",
+            "how to use",
+            "how do i click",
+            "how do i enable",
+            "show me how",
+            "walk me through",
+            "teach me how",
+            "teach me this",
+            "teach me that"
+        ]
+        return teachPhrases.contains { normalizedUserMessage.contains($0) }
+    }
+
     static func matchesPointerExplainIntent(normalizedUserMessage: String) -> Bool {
         if DexterContextRelevancePlanner.matchesWhatIsThisPublic(normalizedUserMessage) {
             return true

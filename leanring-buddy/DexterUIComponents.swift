@@ -80,13 +80,28 @@ struct DexterCompanionMark: View {
     var size: CGFloat = 28
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
-                .fill(DexterIdentity.accentSubtle)
-                .frame(width: size, height: size)
-            Image(systemName: "cursorarrow.rays")
-                .font(.system(size: size * 0.45, weight: .semibold))
-                .foregroundColor(DexterIdentity.accent)
+        Group {
+            if let definition = DexterCharacterCatalog.character(withID: DexterCharacterCatalog.personalCharacterID),
+               DexterCharacterAssetCatalog.hasAsset(named: DexterCharacterAssetCatalog.stateAssetName(for: .idle)) {
+                DexterCharacterView(
+                    definition: definition,
+                    appearance: DexterCharacterAppearance.defaultAppearance(forCharacterID: definition.id),
+                    state: .idle,
+                    size: .custom(size),
+                    presentationMode: .stage,
+                    animationEnabled: false,
+                    profileNameForAccessibility: nil
+                )
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                        .fill(DexterIdentity.accentSubtle)
+                        .frame(width: size, height: size)
+                    Image(systemName: "cursorarrow.rays")
+                        .font(.system(size: size * 0.45, weight: .semibold))
+                        .foregroundColor(DexterIdentity.accent)
+                }
+            }
         }
         .accessibilityLabel("Dexter companion")
     }
@@ -183,10 +198,12 @@ struct DexterVoiceStatusCard: View {
                 switch interactionState {
                 case .listening:
                     DexterListeningIndicator(audioPowerLevel: audioPowerLevel)
-                case .thinking:
+                case .transcribing, .thinking:
                     DexterThinkingIndicator()
                 case .speaking:
                     DexterSpeakingIndicator()
+                case .error:
+                    DexterStatusChip(label: "Voice unavailable", isActive: true)
                 case .idle:
                     EmptyView()
                 }
@@ -332,20 +349,41 @@ struct DexterVerificationResultCard: View {
 }
 
 struct DexterTaskStatusCard: View {
+    enum Presentation {
+        case panel
+        case companionInline
+    }
+
     let headline: String
     let detail: String
+    var presentation: Presentation = .panel
 
     var body: some View {
-        DexterPanelCard {
-            VStack(alignment: .leading, spacing: 8) {
-                DexterSectionHeader(title: "Task status")
-                Text(headline)
-                    .font(DexterIdentity.Typography.bodyMedium())
-                    .foregroundColor(DS.Colors.textPrimary)
-                Text(detail)
-                    .font(DexterIdentity.Typography.monoCaption())
-                    .foregroundColor(DS.Colors.textTertiary)
+        switch presentation {
+        case .panel:
+            DexterPanelCard {
+                VStack(alignment: .leading, spacing: 8) {
+                    DexterSectionHeader(title: "Task status")
+                    Text(headline)
+                        .font(DexterIdentity.Typography.bodyMedium())
+                        .foregroundColor(DS.Colors.textPrimary)
+                    Text(detail)
+                        .font(DexterIdentity.Typography.monoCaption())
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
             }
+        case .companionInline:
+            VStack(alignment: .leading, spacing: DexterSpacing.xs) {
+                Text(headline)
+                    .font(DexterTypography.bodyMedium())
+                    .foregroundColor(DexterSurfaceColors.textPrimary)
+                Text(detail)
+                    .font(DexterTypography.metadata())
+                    .foregroundColor(DexterSurfaceColors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .dexterCompanionInlineBannerChrome()
         }
     }
 }
@@ -392,15 +430,26 @@ struct DexterDemonstrationPhaseBanner: View {
 }
 
 struct DexterFloatingCompanionHeader: View {
+    var activeProfile: DexterProfile?
+    var characterState: DexterCharacterState = .idle
     let statusChipLabel: String
     let isStatusActive: Bool
     let onDismiss: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            DexterCompanionMark()
+            if let activeProfile {
+                DexterAvatar(
+                    profile: activeProfile,
+                    size: DexterAvatarSize.sm,
+                    characterState: characterState,
+                    animationEnabled: isStatusActive
+                )
+            } else {
+                DexterCompanionMark()
+            }
             VStack(alignment: .leading, spacing: 2) {
-                Text("Dexter")
+                Text(activeProfile?.name ?? "Dexter")
                     .font(DexterIdentity.Typography.title())
                     .foregroundColor(DS.Colors.textPrimary)
                 DexterStatusChip(label: statusChipLabel, isActive: isStatusActive)

@@ -11,6 +11,7 @@ enum DexterToolGatewayUnavailableReason: Equatable {
     case nodeNotPaired
     case nodeDisconnected
     case capabilityMissing(DexterOpenClawCapabilityKind)
+    case applicationLifecycleControlUnavailable(providerLabel: String?)
     case permissionDenied(String)
     case unsupportedTool(String)
 }
@@ -34,6 +35,7 @@ struct DexterOpenClawCapabilityDiscoveryReport: Equatable {
     let nodeConnected: Bool
     let nodeIdentifier: String?
     let capabilities: [DexterOpenClawCapabilityStatus]
+    let computerUseDescriptor: OpenClawNodeComputerUseDescriptorSnapshot
 
     func isCapabilityAvailable(_ capability: DexterOpenClawCapabilityKind) -> Bool {
         capabilities.first(where: { $0.capability == capability })?.isAvailable == true

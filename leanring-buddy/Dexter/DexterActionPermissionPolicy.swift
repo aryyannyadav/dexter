@@ -55,7 +55,7 @@ extension PermissionManager {
         }
 
         switch action.type {
-        case .inspectScreen, .explainContent:
+        case .inspectScreen, .explainContent, .listRunningApplications:
             return DexterActionPermissionDecision(
                 isAllowed: true,
                 message: "Read-only inspection does not require computer execution.",

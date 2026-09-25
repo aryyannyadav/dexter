@@ -106,6 +106,7 @@ struct BlueCursorView: View {
     let screenFrame: CGRect
     let isFirstAppearance: Bool
     @ObservedObject var companionManager: CompanionManager
+    @StateObject private var cursorAppearanceSettings = DexterCursorSettingsStore.shared
 
     @State private var cursorPosition: CGPoint
     @State private var isCursorOnThisScreen: Bool
@@ -181,10 +182,26 @@ struct BlueCursorView: View {
         "found it!"
     ]
 
+    private var cursorAccentColor: Color {
+        switch cursorAppearanceSettings.selectedAccentColor {
+        case .blue:
+            return DexterPastelColors.sky
+        case .pastelPink:
+            return DexterPastelColors.blush
+        default:
+            return cursorAppearanceSettings.selectedAccentColor.swatchColor
+        }
+    }
+
     var body: some View {
         ZStack {
             // Nearly transparent background (helps with compositing)
             Color.black.opacity(0.001)
+
+            if let teachingSession = companionManager.dexterTeachingOverlayStore.activeSession,
+               DexterOverlayScreenGeometry.isSameDisplay(teachingSession.displayFrameInScreenSpace, screenFrame) {
+                DexterTeachingOverlay(session: teachingSession, screenFrame: screenFrame)
+            }
 
             // Welcome speech bubble (first launch only)
             if isCursorOnThisScreen && showWelcome && !welcomeText.isEmpty {
@@ -195,8 +212,8 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
-                            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.5), radius: 6, x: 0, y: 0)
+                            .fill(cursorAccentColor)
+                            .shadow(color: cursorAccentColor.opacity(0.5), radius: 6, x: 0, y: 0)
                     )
                     .fixedSize()
                     .overlay(
@@ -239,8 +256,8 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
-                            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.5), radius: 6, x: 0, y: 0)
+                            .fill(cursorAccentColor)
+                            .shadow(color: cursorAccentColor.opacity(0.5), radius: 6, x: 0, y: 0)
                     )
                     .fixedSize()
                     .overlay(
@@ -269,9 +286,9 @@ struct BlueCursorView: View {
                     .padding(.vertical, 4)
                     .background(
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(DS.Colors.overlayCursorBlue)
+                            .fill(cursorAccentColor)
                             .shadow(
-                                color: DS.Colors.overlayCursorBlue.opacity(0.5 + (1.0 - navigationBubbleScale) * 1.0),
+                                color: cursorAccentColor.opacity(0.5 + (1.0 - navigationBubbleScale) * 1.0),
                                 radius: 6 + (1.0 - navigationBubbleScale) * 16,
                                 x: 0, y: 0
                             )
@@ -294,6 +311,20 @@ struct BlueCursorView: View {
                     }
             }
 
+            if buddyIsVisibleOnThisScreen
+                && companionManager.pointAskPresenceState != .ready
+                && (companionManager.voiceInteractionState == .idle
+                    || companionManager.voiceInteractionState == .listening
+                    || companionManager.voiceInteractionState == .speaking
+                    || companionManager.voiceInteractionState == .transcribing
+                    || companionManager.voiceInteractionState == .thinking) {
+                DexterPointAskCursorChrome(presenceState: companionManager.pointAskPresenceState)
+                    .opacity(cursorOpacity)
+                    .position(cursorPosition)
+                    .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
+                    .animation(.easeInOut(duration: 0.25), value: companionManager.pointAskPresenceState)
+            }
+
             // Blue triangle cursor — shown when idle or while TTS is playing (responding).
             // All three states (triangle, waveform, spinner) stay in the view tree
             // permanently and cross-fade via opacity so SwiftUI doesn't remove/re-insert
@@ -302,12 +333,12 @@ struct BlueCursorView: View {
             // During cursor following: fast spring animation for snappy tracking.
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
-            Triangle()
-                .fill(DS.Colors.overlayCursorBlue)
-                .frame(width: 16, height: 16)
-                .rotationEffect(.degrees(triangleRotationDegrees))
-                .shadow(color: DS.Colors.overlayCursorBlue, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
-                .scaleEffect(buddyFlightScale)
+            DexterCompanionCursorView(
+                style: cursorAppearanceSettings.selectedCursorStyle,
+                accentColor: cursorAccentColor,
+                rotationDegrees: triangleRotationDegrees,
+                flightScale: buddyFlightScale
+            )
                 .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceInteractionState == .idle || companionManager.voiceInteractionState == .speaking) ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
@@ -321,17 +352,27 @@ struct BlueCursorView: View {
                     buddyNavigationMode == .navigatingToTarget ? nil : .easeInOut(duration: 0.3),
                     value: triangleRotationDegrees
                 )
+                .animation(.easeInOut(duration: DexterAnimation.standard), value: cursorAppearanceSettings.selectedCursorStyle)
 
             // Blue waveform — replaces the triangle while listening
-            BlueCursorWaveformView(audioPowerLevel: companionManager.currentAudioPowerLevel)
+            BlueCursorWaveformView(
+                audioPowerLevel: companionManager.currentAudioPowerLevel,
+                accentColor: cursorAccentColor
+            )
                 .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceInteractionState == .listening ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceInteractionState)
 
             // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
-            BlueCursorSpinnerView()
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceInteractionState == .thinking ? cursorOpacity : 0)
+            BlueCursorSpinnerView(accentColor: cursorAccentColor)
+                .opacity(
+                    buddyIsVisibleOnThisScreen
+                        && (companionManager.voiceInteractionState == .transcribing
+                            || companionManager.voiceInteractionState == .thinking)
+                        ? cursorOpacity
+                        : 0
+                )
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceInteractionState)
@@ -434,12 +475,26 @@ struct BlueCursorView: View {
                 return
             }
 
-            // Normal cursor following
-            let swiftUIPosition = self.convertScreenPointToSwiftUICoordinates(mouseLocation)
-            let buddyX = swiftUIPosition.x + 35
-            let buddyY = swiftUIPosition.y + 25
-            self.cursorPosition = CGPoint(x: buddyX, y: buddyY)
+            if self.shouldDockCursorCompanionAtScreenEdge {
+                self.cursorPosition = self.dockedCursorCompanionPosition()
+            } else {
+                let swiftUIPosition = self.convertScreenPointToSwiftUICoordinates(mouseLocation)
+                let buddyX = swiftUIPosition.x + 35
+                let buddyY = swiftUIPosition.y + 25
+                self.cursorPosition = CGPoint(x: buddyX, y: buddyY)
+            }
         }
+    }
+
+    private var shouldDockCursorCompanionAtScreenEdge: Bool {
+        cursorAppearanceSettings.isDockCursorEnabled
+            && companionManager.voiceInteractionState == .idle
+            && buddyNavigationMode == .followingCursor
+            && companionManager.detectedElementScreenLocation == nil
+    }
+
+    private func dockedCursorCompanionPosition() -> CGPoint {
+        CGPoint(x: screenFrame.width - 72, y: screenFrame.height - 72)
     }
 
     /// Converts a macOS screen point (AppKit, bottom-left origin) to SwiftUI
@@ -708,6 +763,7 @@ struct BlueCursorView: View {
 /// the user is holding the push-to-talk shortcut and speaking.
 private struct BlueCursorWaveformView: View {
     let audioPowerLevel: CGFloat
+    let accentColor: Color
 
     private let barCount = 5
     private let listeningBarProfile: [CGFloat] = [0.4, 0.7, 1.0, 0.7, 0.4]
@@ -717,7 +773,7 @@ private struct BlueCursorWaveformView: View {
             HStack(alignment: .center, spacing: 2) {
                 ForEach(0..<barCount, id: \.self) { barIndex in
                     RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(DS.Colors.overlayCursorBlue)
+                        .fill(accentColor)
                         .frame(
                             width: 2,
                             height: barHeight(
@@ -727,7 +783,7 @@ private struct BlueCursorWaveformView: View {
                         )
                 }
             }
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 6, x: 0, y: 0)
+            .shadow(color: accentColor.opacity(0.6), radius: 6, x: 0, y: 0)
             .animation(.linear(duration: 0.08), value: audioPowerLevel)
         }
     }
@@ -747,6 +803,7 @@ private struct BlueCursorWaveformView: View {
 /// A small blue spinning indicator that replaces the triangle cursor
 /// while the AI is processing a voice input.
 private struct BlueCursorSpinnerView: View {
+    let accentColor: Color
     @State private var isSpinning = false
 
     var body: some View {
@@ -755,8 +812,8 @@ private struct BlueCursorSpinnerView: View {
             .stroke(
                 AngularGradient(
                     colors: [
-                        DS.Colors.overlayCursorBlue.opacity(0.0),
-                        DS.Colors.overlayCursorBlue
+                        accentColor.opacity(0.0),
+                        accentColor
                     ],
                     center: .center
                 ),
@@ -764,7 +821,7 @@ private struct BlueCursorSpinnerView: View {
             )
             .frame(width: 14, height: 14)
             .rotationEffect(.degrees(isSpinning ? 360 : 0))
-            .shadow(color: DS.Colors.overlayCursorBlue.opacity(0.6), radius: 6, x: 0, y: 0)
+            .shadow(color: accentColor.opacity(0.6), radius: 6, x: 0, y: 0)
             .onAppear {
                 withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) {
                     isSpinning = true

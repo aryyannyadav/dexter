@@ -80,6 +80,11 @@ enum DexterStructuredModelRequestBuilder {
             sections.append(crossApplicationSection)
         }
 
+        if let workspaceSlice = dexterContext.fileWorkspaceContext {
+            sections.append(sectionHeader("DEXTER WORKSPACE"))
+            sections.append(fileWorkspaceDescription(from: workspaceSlice))
+        }
+
         if let availableToolsPromptSection, !availableToolsPromptSection.isEmpty {
             sections.append(sectionHeader("AVAILABLE TOOLS"))
             sections.append(availableToolsPromptSection)
@@ -336,5 +341,31 @@ enum DexterStructuredModelRequestBuilder {
         }
 
         return DexterModelImageInput(imageData: capture.imageData, label: label)
+    }
+
+    private static func fileWorkspaceDescription(from slice: DexterFileWorkspaceContextSlice) -> String {
+        var lines = slice.summaryLines
+        if let editorFile = slice.matchedEditorFileName {
+            lines.append("Active editor file (name only): \(editorFile)")
+        }
+        if slice.relevantFiles.isEmpty {
+            lines.append("No indexed files matched this turn — use workspace summary only.")
+        } else {
+            lines.append("Relevant workspace files (metadata and bounded excerpts only):")
+            for file in slice.relevantFiles {
+                var fileLine = "- \(file.name) (\(file.contentKind.userFacingLabel)) at \(file.displayPath)"
+                if let modifiedAt = file.modifiedAt {
+                    fileLine += ", modified \(modifiedAt.formatted(date: .abbreviated, time: .shortened))"
+                }
+                if let snippet = file.searchableTextSnippet?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !snippet.isEmpty {
+                    let bounded = String(snippet.prefix(DexterFileWorkspaceContextProvider.maxSnippetCharactersInPrompt))
+                    fileLine += "\n  excerpt: \(bounded)"
+                }
+                lines.append(fileLine)
+            }
+        }
+        lines.append("Do not assume access to files outside this Dexter workspace.")
+        return lines.joined(separator: "\n")
     }
 }

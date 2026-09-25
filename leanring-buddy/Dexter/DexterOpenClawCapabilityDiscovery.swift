@@ -28,7 +28,8 @@ enum DexterOpenClawCapabilityDiscovery {
             nodePaired: nodeSnapshot.isPaired,
             nodeConnected: nodeSnapshot.isConnected,
             nodeIdentifier: nodeSnapshot.nodeIdentifier.isEmpty ? nil : nodeSnapshot.nodeIdentifier,
-            capabilities: capabilityStatuses
+            capabilities: capabilityStatuses,
+            computerUseDescriptor: nodeSnapshot.computerUseDescriptor
         )
     }
 
@@ -73,6 +74,14 @@ enum DexterOpenClawCapabilityDiscovery {
             commandAdvertised = nodeSnapshot.hasBrowserProxyCommand
         case .systemRun:
             commandAdvertised = nodeSnapshot.hasSystemRunCommand
+        case .file:
+            commandAdvertised = nodeSnapshot.hasFileCapabilityCommand
+        case .canvas:
+            commandAdvertised = nodeSnapshot.hasCanvasCapabilityCommand
+        case .mcp:
+            commandAdvertised = nodeSnapshot.hasMCPCapabilityCommand
+        case .localInference:
+            commandAdvertised = nodeSnapshot.hasLocalInferenceCapabilityCommand
         }
 
         guard commandAdvertised else {
@@ -100,7 +109,7 @@ enum DexterOpenClawCapabilityDiscovery {
                     detail: "Node reports screen recording permission is not granted."
                 )
             }
-        case .browserProxy, .systemRun:
+        case .browserProxy, .systemRun, .file, .canvas, .mcp, .localInference:
             break
         }
 

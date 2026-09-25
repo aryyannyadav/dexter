@@ -31,7 +31,7 @@ enum DexterActionVerificationRecoveryPolicy {
         case .scroll:
             return .none
 
-        case .inspectScreen, .explainContent, .click, .typeText, .keyboardShortcut, .select,
+        case .inspectScreen, .explainContent, .listRunningApplications, .click, .typeText, .keyboardShortcut, .select,
              .runTask, .quitApplication, .fileOperation, .terminalOperation:
             return .none
         }

@@ -5,7 +5,8 @@
 
 import SwiftUI
 
-struct DexterEmptyState: View {
+/// Chat home suggestions — uses legacy DS tokens until chat is migrated to DexterTheme.
+struct DexterChatHomeEmptyState: View {
     let onSuggestionSelected: (String) -> Void
 
     private let suggestions = [
@@ -30,7 +31,7 @@ struct DexterEmptyState: View {
 
             VStack(spacing: 10) {
                 ForEach(suggestions, id: \.self) { suggestion in
-                    DexterSuggestionCard(title: suggestion) {
+                    DexterQuickPromptChip(title: suggestion) {
                         onSuggestionSelected(suggestion)
                     }
                 }

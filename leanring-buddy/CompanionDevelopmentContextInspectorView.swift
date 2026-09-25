@@ -8,6 +8,7 @@ import SwiftUI
 #if DEBUG
 struct CompanionDevelopmentContextInspectorView: View {
     @ObservedObject var companionManager: CompanionManager
+    @State private var isCharacterStatePreviewPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -21,6 +22,17 @@ struct CompanionDevelopmentContextInspectorView: View {
             }
             .toggleStyle(.switch)
             .pointerCursor()
+
+            Button("Preview character states") {
+                isCharacterStatePreviewPresented = true
+            }
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(DexterPastelColors.lavender)
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .sheet(isPresented: $isCharacterStatePreviewPresented) {
+                DexterCharacterStatePreviewSheet()
+            }
 
             if companionManager.isDevelopmentContextInspectorEnabled {
                 if let snapshot = companionManager.developmentContextInspectorSnapshot {

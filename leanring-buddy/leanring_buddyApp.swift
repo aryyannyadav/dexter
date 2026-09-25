@@ -2,9 +2,7 @@
 //  leanring_buddyApp.swift
 //  leanring-buddy
 //
-//  Menu bar-only companion app. No dock icon, no main window — just an
-//  always-available status item in the macOS menu bar. Clicking the icon
-//  opens a floating panel with companion voice controls.
+//  Dexter macOS app: Dock + Home window, with menu bar companion access.
 //
 
 import ServiceManagement
@@ -16,11 +14,16 @@ struct leanring_buddyApp: App {
     @NSApplicationDelegateAdaptor(CompanionAppDelegate.self) var appDelegate
 
     var body: some Scene {
-        // The app lives entirely in the menu bar panel managed by the AppDelegate.
-        // This empty Settings scene satisfies SwiftUI's requirement for at least
-        // one scene but is never shown (LSUIElement=true removes the app menu).
         Settings {
-            EmptyView()
+            if let companionManager = appDelegate.companionManagerForSettings {
+                DexterSettingsShell(
+                    companionManager: companionManager,
+                    router: appDelegate.settingsRouter
+                )
+            } else {
+                Text("Dexter Settings")
+                    .frame(width: 320, height: 120)
+            }
         }
     }
 }
@@ -29,14 +32,25 @@ struct leanring_buddyApp: App {
 /// the companion voice pipeline on launch.
 @MainActor
 final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
+    static weak var shared: CompanionAppDelegate?
+
     private var menuBarPanelManager: MenuBarPanelManager?
     let companionManager = CompanionManager()
+    let settingsRouter = DexterSettingsRouter()
+    var companionManagerForSettings: CompanionManager? { companionManager }
     private let dexterMainWindowManager = DexterMainWindowManager()
+    private let dexterSettingsWindowManager = DexterSettingsWindowManager()
+    private let dexterFirstRunOnboardingWindowManager = DexterFirstRunOnboardingWindowManager()
+    private var dexterNotchPanelManager: DexterNotchPanelManager?
+    private var dexterAgentHUDPanelManager: DexterAgentHUDPanelManager?
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        CompanionAppDelegate.shared = self
         print("🎯 Dexter: Starting...")
         print("🎯 Dexter: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
+
+        NSApp.setActivationPolicy(.regular)
 
         UserDefaults.standard.register(defaults: [
             "NSInitialToolTipDelay": 0,
@@ -47,14 +61,29 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         DexterAnalytics.trackAppOpened()
 
         dexterMainWindowManager.install(companionManager: companionManager)
+        dexterSettingsWindowManager.install(
+            companionManager: companionManager,
+            settingsRouter: settingsRouter
+        )
+        dexterFirstRunOnboardingWindowManager.install(companionManager: companionManager)
         menuBarPanelManager = MenuBarPanelManager(companionManager: companionManager)
+        dexterNotchPanelManager = DexterNotchPanelManager(companionManager: companionManager)
+        dexterNotchPanelManager?.install()
+        dexterAgentHUDPanelManager = DexterAgentHUDPanelManager(companionManager: companionManager)
+        dexterAgentHUDPanelManager?.install()
+        companionManager.installUniversalCommand(settingsRouter: settingsRouter)
         companionManager.start()
-        // Auto-open the panel if the user still needs to do something:
-        // either they haven't onboarded yet, or permissions were revoked.
-        if !companionManager.hasCompletedOnboarding || !companionManager.allPermissionsGranted {
-            menuBarPanelManager?.showPanelOnLaunch()
+        if !companionManager.hasCompletedOnboarding {
+            companionManager.firstRunOnboardingStore.beginIfNeeded()
+            dexterFirstRunOnboardingWindowManager.presentFirstRunOnboarding()
+        } else {
+            if DexterGeneralSettingsStore.shared.openHomeWhenDexterLaunches {
+                dexterMainWindowManager.openMainWindow()
+            }
+            if !companionManager.allPermissionsGranted {
+                menuBarPanelManager?.showPanelOnLaunch()
+            }
         }
-        registerAsLoginItemIfNeeded()
         // startSparkleUpdater()
     }
 
@@ -62,19 +91,13 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         companionManager.stop()
     }
 
-    /// Registers the app as a login item so it launches automatically on
-    /// startup. Uses SMAppService which shows the app in System Settings >
-    /// General > Login Items, letting the user toggle it off if they want.
-    private func registerAsLoginItemIfNeeded() {
-        let loginItemService = SMAppService.mainApp
-        if loginItemService.status != .enabled {
-            do {
-                try loginItemService.register()
-                print("🎯 Dexter: Registered as login item")
-            } catch {
-                print("⚠️ Dexter: Failed to register as login item: \(error)")
-            }
-        }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        dexterMainWindowManager.focusHomeWindow()
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     private func startSparkleUpdater() {

@@ -11,8 +11,14 @@ struct DexterVoiceButton: View {
     let isPushToTalkEnabled: Bool
     let hasError: Bool
     var size: DexterVoiceButtonSize = .regular
+    var prominence: DexterVoiceButtonProminence = .standard
     let onPress: () -> Void
     let onRelease: () -> Void
+
+    enum DexterVoiceButtonProminence {
+        case standard
+        case primary
+    }
 
     enum DexterVoiceButtonSize {
         case compact
@@ -37,43 +43,60 @@ struct DexterVoiceButton: View {
     @State private var isHovered = false
 
     private var ringOpacity: Double {
-        if hasError { return 0.9 }
+        if hasError { return 0.45 }
         switch interactionState {
         case .listening: return 0.85
-        case .thinking: return 0.55
+        case .transcribing, .thinking: return 0.55
         case .speaking: return 0.7
+        case .error: return 0.75
         case .idle: return isHovered ? 0.35 : 0.2
         }
     }
 
     private var fillColor: Color {
-        if hasError { return DS.Colors.destructive.opacity(0.25) }
+        if hasError { return DexterColors.warning.opacity(0.14) }
         if !isPushToTalkEnabled { return DS.Colors.surface3 }
         switch interactionState {
         case .listening:
             return DexterIdentity.accent.opacity(0.35 + Double(min(audioPowerLevel, 1)) * 0.25)
-        case .thinking, .speaking:
+        case .transcribing, .thinking, .speaking:
             return DexterIdentity.accentSubtle
+        case .error:
+            return DexterColors.warning.opacity(0.12)
         case .idle:
+            if prominence == .primary {
+                return isPressed || isHovered
+                    ? DexterIdentity.accent.opacity(0.22)
+                    : DexterIdentity.accent.opacity(0.14)
+            }
             return isPressed || isHovered ? DS.Colors.surface3 : DS.Colors.surface2
         }
     }
 
     private var iconName: String {
-        if hasError { return "exclamationmark.triangle.fill" }
+        if hasError { return "mic.slash" }
         switch interactionState {
         case .listening: return "waveform"
+        case .transcribing: return "waveform.badge.mic"
         case .thinking: return "ellipsis"
         case .speaking: return "speaker.wave.2.fill"
+        case .error: return "exclamationmark.triangle.fill"
         case .idle: return "mic.fill"
         }
     }
 
     var body: some View {
         ZStack {
+            if prominence == .primary && !hasError {
+                Circle()
+                    .fill(DexterPastelColors.lavender.opacity(isHovered || isPressed ? 0.2 : 0.12))
+                    .frame(width: size.diameter + 14, height: size.diameter + 14)
+                    .blur(radius: 6)
+            }
+
             Circle()
-                .stroke(DexterIdentity.accent.opacity(ringOpacity), lineWidth: interactionState == .listening ? 2 : 1)
-                .frame(width: size.diameter + 6, height: size.diameter + 6)
+                .stroke(ringColor.opacity(ringOpacity), lineWidth: ringLineWidth)
+                .frame(width: size.diameter + ringPadding, height: size.diameter + ringPadding)
                 .animation(.easeInOut(duration: 0.2), value: interactionState)
 
             Circle()
@@ -82,7 +105,7 @@ struct DexterVoiceButton: View {
                 .overlay(
                     Image(systemName: iconName)
                         .font(.system(size: size.iconSize, weight: .semibold))
-                        .foregroundColor(hasError ? DS.Colors.destructiveText : DexterIdentity.accent)
+                        .foregroundColor(hasError ? DexterColors.warning : DexterIdentity.accent)
                         .symbolEffect(.variableColor.iterative, isActive: interactionState == .thinking)
                 )
         }
@@ -105,12 +128,29 @@ struct DexterVoiceButton: View {
         .accessibilityAddTraits(.isButton)
     }
 
+    private var ringColor: Color {
+        if hasError { return DexterColors.warning }
+        return DexterIdentity.accent
+    }
+
+    private var ringLineWidth: CGFloat {
+        if interactionState == .listening { return 2 }
+        return prominence == .primary ? 1.5 : 1
+    }
+
+    private var ringPadding: CGFloat {
+        prominence == .primary ? 8 : 6
+    }
+
     private var accessibilityLabel: String {
         if hasError { return "Voice error" }
         switch interactionState {
         case .listening: return "Listening"
+        case .transcribing: return "Transcribing"
         case .thinking: return "Processing"
         case .speaking: return "Speaking"
+        case .error:
+            return "Voice unavailable"
         case .idle:
             return isPushToTalkEnabled ? "Hold to talk" : "Push-to-talk disabled"
         }

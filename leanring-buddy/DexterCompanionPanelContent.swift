@@ -69,12 +69,23 @@ struct DexterCompanionPanelContent: View {
         .background(
             RoundedRectangle(cornerRadius: DexterIdentity.panelCornerRadius, style: .continuous)
                 .fill(DS.Colors.background)
-                .shadow(color: Color.black.opacity(0.45), radius: 24, x: 0, y: 12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: DexterIdentity.panelCornerRadius, style: .continuous)
+                        .stroke(DexterPastelColors.lavender.opacity(0.12), lineWidth: 1)
+                )
+                .shadow(
+                    color: DexterShadow.card(isElevated: true).color,
+                    radius: DexterShadow.card(isElevated: true).radius,
+                    x: 0,
+                    y: DexterShadow.card(isElevated: true).y
+                )
         )
     }
 
     private var header: some View {
         return DexterFloatingCompanionHeader(
+            activeProfile: companionManager.dexterProfileStore.activeProfile,
+            characterState: companionManager.activeCharacterState,
             statusChipLabel: panelStatusText,
             isStatusActive: companionManager.voiceInteractionState != .idle || companionManager.isOverlayVisible,
             onDismiss: {
@@ -115,6 +126,14 @@ struct DexterCompanionPanelContent: View {
                 assistantStreamingText: companionManager.dexterVoiceCoordinator.streamingResponseText,
                 assistantFinalText: companionManager.dexterVoiceCoordinator.lastAssistantResponseText
             )
+
+            if let inferenceSuggestion = companionManager.pendingMemoryInferenceSuggestion {
+                DexterMemoryInferencePromptCard(
+                    suggestion: inferenceSuggestion,
+                    onRemember: { companionManager.confirmPendingMemoryInferenceForActiveDexter() },
+                    onDecline: { companionManager.declinePendingMemoryInference() }
+                )
+            }
 
             DexterPanelCard {
                 VStack(alignment: .leading, spacing: 8) {
@@ -352,16 +371,54 @@ struct DexterCompanionPanelContent: View {
     }
 
     private var footer: some View {
-        HStack {
-            Button("Quit") { NSApp.terminate(nil) }
-                .dsTextButtonStyle(fontSize: 12)
-            Spacer()
-            if companionManager.hasCompletedOnboarding {
-                Button("Replay onboarding") { companionManager.replayOnboarding() }
-                    .dsTextButtonStyle(fontSize: 12)
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Button("Open Dexter") {
+                    NotificationCenter.default.post(name: .dexterOpenMainWindow, object: nil)
+                }
+                .font(DexterIdentity.Typography.bodyMedium())
+                .foregroundColor(DexterColors.textPrimary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(DexterPastelColors.lavender.opacity(0.22))
+                )
+                .buttonStyle(.plain)
+                .pointerCursor()
+
+                Button {
+                    NotificationCenter.default.post(name: .dexterOpenMainWindowSettings, object: nil)
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(DexterColors.textSecondary)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(DS.Colors.surface2))
+                }
+                .buttonStyle(.plain)
+                .pointerCursor()
+                .accessibilityLabel("Settings")
             }
+
+            HStack {
+                Button("Quit") { NSApp.terminate(nil) }
+                    .dsTextButtonStyle(fontSize: 12)
+                Spacer()
+                if companionManager.hasCompletedOnboarding {
+                    Button("Replay onboarding") {
+                        NotificationCenter.default.post(
+                            name: .dexterPresentFirstRunOnboarding,
+                            object: nil,
+                            userInfo: ["replay": true]
+                        )
+                    }
+                    .dsTextButtonStyle(fontSize: 12)
+                }
+            }
+            .foregroundColor(DS.Colors.textTertiary)
         }
-        .foregroundColor(DS.Colors.textTertiary)
     }
 }
 

@@ -29,6 +29,7 @@ enum DexterActionExecutionPipeline {
         actionStore: DexterActionStore,
         actionHistoryStore: DexterActionHistoryStore,
         actionPermissionSettings: DexterActionPermissionSettings,
+        isComputerControlAuthorizedForSession: Bool = false,
         hasPersistedScreenContentGrant: Bool,
         confirmationGrant: DexterActionConfirmationGrant? = nil,
         demonstrationPhaseStore: DexterDemonstrationPhaseStore? = nil,
@@ -126,7 +127,8 @@ enum DexterActionExecutionPipeline {
             action: action,
             settings: actionPermissionSettings,
             confirmationGrant: confirmationGrant,
-            observationBefore: observationBeforeConfirmation
+            observationBefore: observationBeforeConfirmation,
+            isComputerControlAuthorizedForSession: isComputerControlAuthorizedForSession
         ) {
             action = action.withState(.awaitingConfirmation)
             actionStore.update(action)
@@ -277,7 +279,7 @@ enum DexterActionExecutionPipeline {
             let turnRecord = DexterActionTurnRecordBuilder.build(
                 action: action,
                 runtimeName: agentRuntime.runtimeName,
-                runtimeExecutionIdentifier: nil,
+                runtimeExecutionIdentifier: verificationBundle.runtimeExecutionIdentifier,
                 verificationReport: verificationBundle.verificationOutcome.report,
                 spokenSummary: verificationBundle.verificationOutcome.summary
             )
@@ -285,6 +287,11 @@ enum DexterActionExecutionPipeline {
             try completeExecutionStateMachine(
                 stateMachine: stateMachine,
                 verificationOutcome: verificationBundle.verificationOutcome
+            )
+            logActionPipelineTaskOutcome(
+                action: action,
+                verificationOutcome: verificationBundle.verificationOutcome,
+                executionSnapshot: stateMachine.snapshot
             )
 
             return DexterActionExecutionOutcome(
@@ -352,7 +359,8 @@ enum DexterActionExecutionPipeline {
     ) async throws -> (
         updatedAction: DexterAction,
         verificationOutcome: ActionVerificationOutcome,
-        recoveryMetadata: DexterActionRecoveryMetadata?
+        recoveryMetadata: DexterActionRecoveryMetadata?,
+        runtimeExecutionIdentifier: String?
     ) {
         var currentAction = action
         var didAttemptSafeRetry = false
@@ -362,21 +370,62 @@ enum DexterActionExecutionPipeline {
             try executionStateMachine.checkContinuationAllowed()
 
             DexterTaskTraceRecorder.shared.markPhase(.toolCalls)
-            let executionResult = try await DexterAgentRuntimeExecutionGuard.executeAction(
-                agentRuntime: agentRuntime,
-                actionRequest: agentRequest
+            DexterActionDiagnosticLog.action(
+                "execution started provider=\(agentRuntime.runtimeName) action=\(currentAction.type.rawValue)"
             )
+            let executionResult: AgentActionResult
+            do {
+                executionResult = try await DexterAgentRuntimeExecutionGuard.executeAction(
+                    agentRuntime: agentRuntime,
+                    actionRequest: agentRequest
+                )
+            } catch let timeoutError as DexterAgentRuntimeExecutionGuard.TimeoutError {
+                return try await finishAfterExecutionTimeout(
+                    action: currentAction,
+                    observationBefore: observationBefore,
+                    context: context,
+                    hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
+                    permissionManager: permissionManager,
+                    contextObserver: contextObserver,
+                    actionVerifier: actionVerifier,
+                    timeoutError: timeoutError
+                )
+            }
             DexterTaskTraceRecorder.shared.markPhase(.executionResults)
             DexterObservabilityLog.tool("execution_result reportedSuccess=\(executionResult.reportedSuccess)")
+            if let runtimeExecutionIdentifier = executionResult.runtimeTaskIdentifier {
+                DexterActionDiagnosticLog.action("executionId=\(runtimeExecutionIdentifier.prefix(8))")
+            }
 
             try Task.checkCancellation()
+
+            if shouldReportOpenClawDisconnectedDuringVerification(agentRuntime: agentRuntime) {
+                let disconnectMessage =
+                    "Computer runtime disconnected while Dexter was performing the action."
+                DexterActionDiagnosticLog.action("runtime disconnected during execution")
+                return (
+                    currentAction.withState(.failed),
+                    ActionVerificationOutcome(
+                        status: .failed,
+                        summary: disconnectMessage,
+                        report: DexterActionVerificationReport(
+                            status: .failed,
+                            summary: disconnectMessage,
+                            expectedStateDescription: currentAction.humanReadableDescription,
+                            observedStateDescription: "OpenClaw gateway or node disconnected before verification."
+                        )
+                    ),
+                    nil,
+                    executionResult.runtimeTaskIdentifier
+                )
+            }
 
             if DexterActionVerificationEngine.requiresPostExecutionObservationSettle(for: currentAction) {
                 try await Task.sleep(nanoseconds: 350_000_000)
             }
 
-            try executionStateMachine.transition(to: .verifying, progressSummary: "Comparing intended vs observed state.")
-            demonstrationPhaseStore?.transition(to: .verifying, detail: "Comparing intended vs observed state")
+            try executionStateMachine.transition(to: .verifying, progressSummary: "Verifying…")
+            demonstrationPhaseStore?.transition(to: .verifying, detail: "Verifying…")
 
             let permissionSnapshot = permissionManager.currentPermissionSnapshot(
                 hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
@@ -385,21 +434,51 @@ enum DexterActionExecutionPipeline {
                 for: currentAction,
                 context: context
             )
-            let observationAfter = contextObserver.observeCurrentEnvironment(
-                pointerLocationInScreenSpace: observationPointerLocation,
-                hasAccessibilityPermission: permissionSnapshot.hasAccessibilityPermission
+
+            let maxObservationAttempts = DexterActionBoundedVerificationPolicy.maxObservationAttempts(
+                for: currentAction
             )
-            DexterTaskTraceRecorder.shared.markPhase(.observation)
-            DexterObservabilityLog.observe("post_action_environment_snapshot collected")
+            var verificationOutcome: ActionVerificationOutcome!
+            var observationAfter = DexterActionObservationSnapshot.empty
 
             DexterActionDiagnosticLog.verify("verification started")
 
-            let verificationOutcome = await DexterTaskTraceRecorder.shared.measure(bucket: .verification) {
-                await actionVerifier.verify(
-                action: currentAction,
-                executionResult: executionResult,
-                observationBefore: observationBefore,
-                observationAfter: observationAfter
+            for observationAttemptIndex in 1...maxObservationAttempts {
+                if observationAttemptIndex > 1 {
+                    try await Task.sleep(
+                        nanoseconds: DexterActionBoundedVerificationPolicy.lifecycleRetryDelayNanoseconds
+                    )
+                }
+
+                observationAfter = contextObserver.observeCurrentEnvironment(
+                    pointerLocationInScreenSpace: observationPointerLocation,
+                    hasAccessibilityPermission: permissionSnapshot.hasAccessibilityPermission
+                )
+                DexterTaskTraceRecorder.shared.markPhase(.observation)
+                DexterObservabilityLog.observe(
+                    "post_action_environment_snapshot collected attempt=\(observationAttemptIndex)"
+                )
+
+                verificationOutcome = await DexterTaskTraceRecorder.shared.measure(bucket: .verification) {
+                    await actionVerifier.verify(
+                        action: currentAction,
+                        executionResult: executionResult,
+                        observationBefore: observationBefore,
+                        observationAfter: observationAfter
+                    )
+                }
+
+                let shouldRetryObservation = DexterActionBoundedVerificationPolicy.shouldRetryObservation(
+                    action: currentAction,
+                    verificationOutcome: verificationOutcome,
+                    attemptIndex: observationAttemptIndex,
+                    maxAttempts: maxObservationAttempts
+                )
+                if !shouldRetryObservation {
+                    break
+                }
+                DexterActionDiagnosticLog.verify(
+                    "verification retry attempt=\(observationAttemptIndex + 1) of \(maxObservationAttempts)"
                 )
             }
 
@@ -446,8 +525,87 @@ enum DexterActionExecutionPipeline {
             let metadataToReturn: DexterActionRecoveryMetadata? =
                 currentAction.state == .completed ? recoveryMetadata : nil
 
-            return (currentAction, verificationOutcome, metadataToReturn)
+            return (
+                currentAction,
+                verificationOutcome,
+                metadataToReturn,
+                executionResult.runtimeTaskIdentifier
+            )
         }
+    }
+
+    @MainActor
+    private static func shouldReportOpenClawDisconnectedDuringVerification(agentRuntime: AgentRuntime) -> Bool {
+        guard agentRuntime.runtimeName == "OpenClaw" || agentRuntime.runtimeName == "CompositeDexter" else {
+            return false
+        }
+        let healthMonitor = OpenClawGatewayHealthMonitor.shared
+        return !healthMonitor.connectionState.isConnected || !healthMonitor.preferredNodeSnapshot.isConnected
+    }
+
+    @MainActor
+    private static func finishAfterExecutionTimeout(
+        action: DexterAction,
+        observationBefore: DexterActionObservationSnapshot,
+        context: DexterContext,
+        hasPersistedScreenContentGrant: Bool,
+        permissionManager: PermissionManager,
+        contextObserver: DexterActionContextObserver,
+        actionVerifier: ActionVerifier,
+        timeoutError: DexterAgentRuntimeExecutionGuard.TimeoutError
+    ) async throws -> (
+        updatedAction: DexterAction,
+        verificationOutcome: ActionVerificationOutcome,
+        recoveryMetadata: DexterActionRecoveryMetadata?,
+        runtimeExecutionIdentifier: String?
+    ) {
+        let timedOutExecutionResult = AgentActionResult(
+            reportedSuccess: false,
+            message: DexterUserFacingErrorMessage.forActionRuntimeError(timeoutError, runtimeName: "OpenClaw"),
+            executionStatus: .failed,
+            runtimeTaskIdentifier: nil,
+            rawOutput: "timed_out"
+        )
+        let permissionSnapshot = permissionManager.currentPermissionSnapshot(
+            hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
+        )
+        let observationPointerLocation = DexterActionObservationPointerResolver.pointerLocationInScreenSpace(
+            for: action,
+            context: context
+        )
+        let observationAfter = contextObserver.observeCurrentEnvironment(
+            pointerLocationInScreenSpace: observationPointerLocation,
+            hasAccessibilityPermission: permissionSnapshot.hasAccessibilityPermission
+        )
+        let verificationOutcome = await actionVerifier.verify(
+            action: action,
+            executionResult: timedOutExecutionResult,
+            observationBefore: observationBefore,
+            observationAfter: observationAfter
+        )
+        let finalOutcome: ActionVerificationOutcome
+        let finalAction: DexterAction
+        if verificationOutcome.wasSuccessful {
+            finalOutcome = verificationOutcome
+            finalAction = action.withState(.completed)
+        } else {
+            let timeoutSummary = DexterUserFacingErrorMessage.forActionRuntimeError(
+                timeoutError,
+                runtimeName: "OpenClaw"
+            )
+            finalOutcome = ActionVerificationOutcome(
+                status: .failed,
+                summary: timeoutSummary,
+                report: DexterActionVerificationReport(
+                    status: .failed,
+                    summary: timeoutSummary,
+                    expectedStateDescription: action.humanReadableDescription,
+                    observedStateDescription: verificationOutcome.report.observedStateDescription
+                )
+            )
+            finalAction = action.withState(.verificationFailed)
+        }
+        return (finalAction, finalOutcome, nil, nil)
     }
 
     @MainActor
@@ -465,6 +623,26 @@ enum DexterActionExecutionPipeline {
         case .unavailable, .failed:
             try stateMachine.fail(code: "verification_failed", message: verificationOutcome.summary)
         }
+    }
+
+    @MainActor
+    private static func logActionPipelineTaskOutcome(
+        action: DexterAction,
+        verificationOutcome: ActionVerificationOutcome,
+        executionSnapshot: DexterExecutionMachineSnapshot
+    ) {
+        let operationalOutcome: String
+        switch verificationOutcome.status {
+        case .verified, .partiallyVerified:
+            operationalOutcome = "SUCCESS"
+        case .failed:
+            operationalOutcome = "FAILURE"
+        case .unavailable:
+            operationalOutcome = "UNAVAILABLE"
+        }
+        DexterObservabilityLog.verify(
+            "action_state=\(action.state.rawValue) execution_phase=\(executionSnapshot.currentPhase.rawValue) task_outcome=\(operationalOutcome)"
+        )
     }
 
     @MainActor
@@ -487,6 +665,9 @@ enum DexterActionExecutionPipeline {
             try? stateMachine.fail(code: "execution_failed", message: message)
         }
 
+        DexterObservabilityLog.verify(
+            "action_state=\(failedAction.state.rawValue) execution_phase=\(stateMachine.snapshot.currentPhase.rawValue) task_outcome=FAILURE"
+        )
         return DexterActionExecutionOutcome(
             action: failedAction,
             spokenSummary: message,
@@ -513,6 +694,9 @@ enum DexterActionExecutionPipeline {
         actionHistoryStore?.recordAction(actionIdentifier: cancelledAction.type.rawValue, summary: message)
         try? stateMachine.cancel(message: message)
 
+        DexterObservabilityLog.verify(
+            "action_state=\(cancelledAction.state.rawValue) execution_phase=\(stateMachine.snapshot.currentPhase.rawValue) task_outcome=CANCELLED"
+        )
         return DexterActionExecutionOutcome(
             action: cancelledAction,
             spokenSummary: message,

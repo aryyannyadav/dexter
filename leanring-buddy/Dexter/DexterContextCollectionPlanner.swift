@@ -26,6 +26,32 @@ struct DexterContextCollectionPlan: Equatable {
 
 enum DexterContextCollectionPlanner {
     static func plan(for request: DexterContextAssemblyRequest) -> DexterContextCollectionPlan {
+        applyUserScreenContextPreferences(to: planCore(for: request))
+    }
+
+    private static func planCore(for request: DexterContextAssemblyRequest) -> DexterContextCollectionPlan {
+        if request.pointerLocationInScreenSpaceOverride != nil,
+           screenCaptureRequested(for: request) {
+            return DexterContextCollectionPlan(
+                minimumRelevanceLevel: .object,
+                collectPermissions: true,
+                collectPointer: true,
+                collectPointerTarget: true,
+                collectActiveApplication: true,
+                collectActiveWindow: true,
+                collectSelectedText: true,
+                collectScreenContext: true,
+                collectClipboard: false,
+                collectConversation: request.includeRecentConversation,
+                collectRecentActions: false,
+                collectCurrentTask: false,
+                collectMemory: false,
+                collectProjectContext: false,
+                collectBrowserContext: true,
+                collectAvailableTools: false
+            )
+        }
+
         if request.performanceProfile == .minimal
             || DexterTrivialQuestionClassifier.isTrivialQuestion(request.userMessage) {
             return DexterContextCollectionPlan(
@@ -201,6 +227,29 @@ enum DexterContextCollectionPlanner {
             collectProjectContext: false,
             collectBrowserContext: false,
             collectAvailableTools: false
+        )
+    }
+
+    private static func applyUserScreenContextPreferences(
+        to plan: DexterContextCollectionPlan
+    ) -> DexterContextCollectionPlan {
+        return DexterContextCollectionPlan(
+            minimumRelevanceLevel: plan.minimumRelevanceLevel,
+            collectPermissions: plan.collectPermissions,
+            collectPointer: plan.collectPointer && DexterScreenContextSettingsStore.resolvedPointerContextEnabled,
+            collectPointerTarget: plan.collectPointerTarget && DexterScreenContextSettingsStore.resolvedPointerContextEnabled,
+            collectActiveApplication: plan.collectActiveApplication,
+            collectActiveWindow: plan.collectActiveWindow,
+            collectSelectedText: plan.collectSelectedText,
+            collectScreenContext: plan.collectScreenContext && DexterScreenContextSettingsStore.resolvedScreenContextEnabled,
+            collectClipboard: plan.collectClipboard,
+            collectConversation: plan.collectConversation,
+            collectRecentActions: plan.collectRecentActions,
+            collectCurrentTask: plan.collectCurrentTask,
+            collectMemory: plan.collectMemory,
+            collectProjectContext: plan.collectProjectContext,
+            collectBrowserContext: plan.collectBrowserContext,
+            collectAvailableTools: plan.collectAvailableTools
         )
     }
 

@@ -8,6 +8,7 @@ import SwiftUI
 struct DexterPointInvokeBanner: View {
     let session: DexterPointInvokeSession?
     let isPreparing: Bool
+    var pointAskPresence: DexterPointAskPresenceState = .ready
     let onDismiss: () -> Void
 
     var body: some View {
@@ -19,67 +20,101 @@ struct DexterPointInvokeBanner: View {
     }
 
     private var preparingBanner: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: DexterMetrics.space10) {
             ProgressView().controlSize(.small)
+            DexterPointAskPresenceBadge(state: .thinking)
             Text("Capturing what you're pointing at…")
-                .font(DexterIdentity.Typography.body())
-                .foregroundColor(DS.Colors.textSecondary)
+                .font(DexterTypography.body())
+                .foregroundColor(DexterColors.textSecondary)
             Spacer()
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                .fill(DS.Colors.surface2)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                .stroke(DexterIdentity.accentBorder, lineWidth: 1)
-        )
+        .dexterCompanionInlineBannerChrome()
     }
 
     private func activeBanner(session: DexterPointInvokeSession) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: DexterMetrics.space8) {
             HStack {
-                Text("Ask Dexter about this.")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(DS.Colors.textPrimary)
+                Text("Point + Ask")
+                    .font(DexterTypography.bodyMedium())
+                    .foregroundColor(DexterColors.textPrimary)
                 Spacer()
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(DS.Colors.textTertiary)
+                        .foregroundColor(DexterColors.textTertiary)
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(DexterColors.inputBackground))
                 }
                 .buttonStyle(.plain)
                 .pointerCursor()
                 .accessibilityLabel("Dismiss pointer context")
             }
 
-            Text(session.contextualIndicatorLabel)
-                .font(DexterIdentity.Typography.body())
-                .foregroundColor(DexterIdentity.accent)
+            HStack(spacing: DexterMetrics.space8) {
+                DexterPointAskPresenceBadge(state: pointAskPresence)
+                Text(session.contextualIndicatorLabel)
+                    .font(DexterTypography.secondary())
+                    .foregroundColor(DexterPastelColors.sky)
+            }
+
+            if let evidenceLine = semanticEvidenceSummary(for: session) {
+                Text(evidenceLine)
+                    .font(DexterTypography.monospacedCaption())
+                    .foregroundColor(DexterColors.textTertiary)
+            }
 
             if session.contextSnapshot.screenCaptureAvailability == .permissionMissing {
                 Text("Screen recording permission is required before Dexter can see this area.")
-                    .font(DexterIdentity.Typography.monoCaption())
-                    .foregroundColor(DS.Colors.destructiveText)
+                    .font(DexterTypography.caption())
+                    .foregroundColor(DexterColors.error)
             } else if session.screenCaptureSnapshots.isEmpty {
-                Text("Screen context wasn't captured. Dexter will explain what it can from app and window info only.")
-                    .font(DexterIdentity.Typography.monoCaption())
-                    .foregroundColor(DS.Colors.textSecondary)
+                Text("Screen context wasn't captured. Dexter will use app and window info.")
+                    .font(DexterTypography.caption())
+                    .foregroundColor(DexterColors.textSecondary)
+            } else if session.userFacingSemanticTargetLabel != nil {
+                Text("Screen and pointer context captured")
+                    .font(DexterTypography.caption())
+                    .foregroundColor(DexterColors.textTertiary)
             } else {
                 Text("Screen context captured")
-                    .font(DexterIdentity.Typography.monoCaption())
-                    .foregroundColor(DS.Colors.textTertiary)
+                    .font(DexterTypography.caption())
+                    .foregroundColor(DexterColors.textTertiary)
             }
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                .fill(DexterIdentity.accentSubtle.opacity(0.45))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: DS.CornerRadius.medium, style: .continuous)
-                .stroke(DexterIdentity.accentBorder, lineWidth: 1)
-        )
+        .dexterCompanionInlineBannerChrome()
+    }
+
+    private func semanticEvidenceSummary(for session: DexterPointInvokeSession) -> String? {
+        guard let target = session.pointerSemanticTarget else { return nil }
+        let sources = target.evidence.map(\.source.rawValue).sorted()
+        guard !sources.isEmpty else { return nil }
+        return "Target from " + sources.joined(separator: ", ")
+    }
+}
+
+private struct DexterPointAskPresenceBadge: View {
+    let state: DexterPointAskPresenceState
+
+    var body: some View {
+        Text(state.userFacingLabel.uppercased())
+            .font(DexterTypography.status())
+            .foregroundColor(DexterColors.textOnAccent)
+            .padding(.horizontal, DexterMetrics.space8)
+            .padding(.vertical, DexterMetrics.space4)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(badgeColor.opacity(0.92))
+            )
+    }
+
+    private var badgeColor: Color {
+        switch state {
+        case .ready:
+            return DexterPastelColors.lavender
+        case .targeted:
+            return DexterPastelColors.sky
+        case .thinking:
+            return DexterPastelColors.blush
+        }
     }
 }

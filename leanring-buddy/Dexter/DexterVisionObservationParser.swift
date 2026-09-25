@@ -10,6 +10,18 @@ private struct DexterVisionObservationsEnvelope: Decodable {
 }
 
 enum DexterVisionObservationParser {
+    /// Strips vision JSON tails and thinking wrappers for chat bubble display (does not change stored message text).
+    static func userFacingChatDisplayText(from rawAssistantText: String) -> String {
+        let sanitized = OllamaResponseSanitizer.userFacingAssistantText(
+            content: rawAssistantText,
+            separateThinkingField: nil
+        )
+        if let (answer, _) = splitAnswerAndObservations(from: sanitized) {
+            return answer
+        }
+        return sanitized
+    }
+
     static func parse(
         rawAssistantText: String,
         scopeUsed: DexterVisionImageScope,

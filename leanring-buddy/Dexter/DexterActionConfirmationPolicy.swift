@@ -23,8 +23,14 @@ enum DexterActionConfirmationPolicy {
         action: DexterAction,
         settings: DexterActionPermissionSettings,
         confirmationGrant: DexterActionConfirmationGrant?,
-        observationBefore: DexterActionObservationSnapshot? = nil
+        observationBefore: DexterActionObservationSnapshot? = nil,
+        isComputerControlAuthorizedForSession: Bool = false
     ) -> Bool {
+        if isComputerControlAuthorizedForSession,
+           DexterComputerControlAuthorizationScope.actionQualifiesForSessionReuse(action) {
+            return false
+        }
+
         let resolvedRiskLevel = DexterActionRiskClassifier.resolvedRiskLevel(for: action)
         let recoveryProfile = observationBefore.map {
             DexterActionRecoveryMetadataBuilder.recoveryProfile(for: action, observationBefore: $0)
@@ -139,7 +145,7 @@ enum DexterActionRiskClassifier {
 
     static func defaultRiskLevel(for actionType: DexterActionType) -> DexterActionRiskLevel {
         switch actionType {
-        case .inspectScreen, .explainContent:
+        case .inspectScreen, .explainContent, .listRunningApplications:
             return .readOnly
         case .openApplication, .focusApplication, .openURL, .scroll, .navigate:
             return .lowRisk

@@ -30,7 +30,10 @@ enum DexterMemoryEngine {
                 expiration: record.expiration,
                 supersedes: conflicting.id,
                 permissions: record.permissions,
-                title: record.title
+                title: record.title,
+                scope: record.scope,
+                dexterProfileId: record.dexterProfileId,
+                fileWorkspaceId: record.fileWorkspaceId
             )
             store.append(superseding)
             return .success(superseding)
@@ -99,7 +102,10 @@ enum DexterMemoryEngine {
             project: existing.project,
             supersedes: existing.id,
             permissions: .defaultForExplicitUser,
-            title: existing.title
+            title: existing.title,
+            scope: existing.scope,
+            dexterProfileId: existing.dexterProfileId,
+            fileWorkspaceId: existing.fileWorkspaceId
         )
         store.append(updated)
         return true
@@ -127,6 +133,9 @@ enum DexterMemoryEngine {
             existing.status == .active
                 && existing.type == record.type
                 && existing.project == record.project
+                && existing.scope == record.scope
+                && existing.dexterProfileId == record.dexterProfileId
+                && existing.fileWorkspaceId == record.fileWorkspaceId
                 && (
                     existing.content.lowercased() == normalizedNew
                         || normalizedNew.contains(existing.content.lowercased())
@@ -142,7 +151,7 @@ enum DexterMemoryEngine {
     }
 }
 
-private extension DexterStructuredMemoryRecord {
+extension DexterStructuredMemoryRecord {
     func withStatus(_ newStatus: DexterMemoryStatus) -> DexterStructuredMemoryRecord {
         DexterStructuredMemoryRecord(
             id: id,
@@ -150,6 +159,7 @@ private extension DexterStructuredMemoryRecord {
             content: content,
             source: source,
             timestamp: timestamp,
+            updatedAt: Date(),
             confidence: confidence,
             importance: importance,
             project: project,
@@ -157,7 +167,32 @@ private extension DexterStructuredMemoryRecord {
             expiration: expiration,
             supersedes: supersedes,
             permissions: permissions,
-            title: title
+            title: title,
+            scope: scope,
+            dexterProfileId: dexterProfileId,
+            fileWorkspaceId: fileWorkspaceId
+        )
+    }
+
+    func withUpdatedContent(_ newContent: String) -> DexterStructuredMemoryRecord {
+        DexterStructuredMemoryRecord(
+            id: id,
+            type: type,
+            content: newContent,
+            source: .explicitUserUtterance,
+            timestamp: timestamp,
+            updatedAt: Date(),
+            confidence: max(confidence, 0.95),
+            importance: importance,
+            project: project,
+            status: .active,
+            expiration: expiration,
+            supersedes: supersedes,
+            permissions: .defaultForExplicitUser,
+            title: title,
+            scope: scope,
+            dexterProfileId: dexterProfileId,
+            fileWorkspaceId: fileWorkspaceId
         )
     }
 }

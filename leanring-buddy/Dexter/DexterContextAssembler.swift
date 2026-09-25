@@ -28,6 +28,8 @@ struct DexterContextAssemblyRequest: Equatable {
     let hasPersistedScreenContentGrant: Bool
     let pointerLocationInScreenSpaceOverride: CGPoint?
     let performanceProfile: DexterContextPerformanceProfile
+    let activeDexterProfileId: UUID?
+    let activeFileWorkspaceId: UUID?
 
     init(
         userMessage: String,
@@ -36,7 +38,9 @@ struct DexterContextAssemblyRequest: Equatable {
         recentConversationLimit: Int = 8,
         hasPersistedScreenContentGrant: Bool = false,
         pointerLocationInScreenSpaceOverride: CGPoint? = nil,
-        performanceProfile: DexterContextPerformanceProfile = .standard
+        performanceProfile: DexterContextPerformanceProfile = .standard,
+        activeDexterProfileId: UUID? = nil,
+        activeFileWorkspaceId: UUID? = nil
     ) {
         self.userMessage = userMessage
         self.screenCaptureMode = screenCaptureMode
@@ -45,6 +49,8 @@ struct DexterContextAssemblyRequest: Equatable {
         self.hasPersistedScreenContentGrant = hasPersistedScreenContentGrant
         self.pointerLocationInScreenSpaceOverride = pointerLocationInScreenSpaceOverride
         self.performanceProfile = performanceProfile
+        self.activeDexterProfileId = activeDexterProfileId
+        self.activeFileWorkspaceId = activeFileWorkspaceId
     }
 }
 
@@ -380,7 +386,14 @@ final class DexterContextAssembler {
         let memory: DexterPersistentMemoryContext?
         if collectionPlan.collectMemory {
             let memoryLimit = DexterContextMemoryLimitPolicy.retrievalLimit(for: request)
-            memory = memoryStore.persistentMemoryContext(forQuery: request.userMessage, limit: memoryLimit)
+            memory = memoryStore.persistentMemoryContext(
+                forQuery: request.userMessage,
+                limit: memoryLimit,
+                retrievalContext: DexterMemoryRetrievalContext(
+                    activeDexterProfileId: request.activeDexterProfileId,
+                    activeFileWorkspaceId: request.activeFileWorkspaceId
+                )
+            )
             recordCollected(
                 "memory",
                 relevanceLevel: .longTerm,
@@ -413,9 +426,7 @@ final class DexterContextAssembler {
 
         let availableTools: DexterAvailableToolsContext?
         if collectionPlan.collectAvailableTools {
-            availableTools = await MainActor.run {
-                DexterAvailableToolsCollector.collect()
-            }
+            availableTools = await DexterAvailableToolsCollector.collect()
             let availableCount = availableTools?.tools.filter(\.isAvailable).count ?? 0
             recordCollected(
                 "availableTools",

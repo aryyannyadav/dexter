@@ -26,6 +26,7 @@ enum DexterPointerAnalysisPolicy {
         accessibilityScore: Double,
         hasScreenshot: Bool
     ) -> Bool {
+        guard DexterScreenContextSettingsStore.resolvedOCREnabled else { return false }
         guard hasScreenshot else { return false }
         return accessibilityScore < 0.55
     }
@@ -35,6 +36,7 @@ enum DexterPointerAnalysisPolicy {
         ocrResult: DexterPointerOCRAnalysisResult,
         userMessage: String?
     ) -> Bool {
+        guard DexterScreenContextSettingsStore.resolvedVisualReasoningEnabled else { return false }
         let normalizedMessage = userMessage?.lowercased() ?? ""
         let asksAboutAppearance = normalizedMessage.contains("why is this red")
             || normalizedMessage.contains("why is that red")

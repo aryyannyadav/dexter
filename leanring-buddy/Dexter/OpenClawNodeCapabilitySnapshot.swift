@@ -18,12 +18,43 @@ struct OpenClawNodePermissionSnapshot: Equatable {
 }
 
 /// Parsed from `openclaw nodes status --json` for the preferred local Mac node.
+struct OpenClawNodeComputerUseDescriptorSnapshot: Equatable {
+    let providerIdentifier: String?
+    let providerLabel: String?
+    let contractVersion: Int?
+    let advertisedActions: [String]
+
+    func advertisesComputerUseAction(_ actionName: String) -> Bool {
+        advertisedActions.contains(actionName)
+    }
+
+    static let unavailable = OpenClawNodeComputerUseDescriptorSnapshot(
+        providerIdentifier: nil,
+        providerLabel: nil,
+        contractVersion: nil,
+        advertisedActions: []
+    )
+
+    /// Actions Dexter maps through `OpenClawDexterToolInvokePlanner` (tests + permissive fallback when descriptor is absent).
+    static let dexterMappedComputerUseActions: [String] = [
+        "list_apps",
+        "launch_app",
+        "kill_app",
+        "bring_to_front",
+        "left_click",
+        "type",
+        "key",
+        "scroll"
+    ]
+}
+
 struct OpenClawNodeCapabilitySnapshot: Equatable {
     let nodeIdentifier: String
     let displayName: String?
     let isPaired: Bool
     let isConnected: Bool
     let advertisedCommands: [String]
+    let computerUseDescriptor: OpenClawNodeComputerUseDescriptorSnapshot
     let permissions: OpenClawNodePermissionSnapshot
 
     var hasComputerActCommand: Bool {
@@ -39,7 +70,48 @@ struct OpenClawNodeCapabilitySnapshot: Equatable {
     }
 
     var hasBrowserProxyCommand: Bool {
-        advertisedCommands.contains("browser.proxy")
+        advertisedCommands.contains("browser.proxy") || advertisedCommands.contains("browser")
+    }
+
+    var hasFileCapabilityCommand: Bool {
+        advertisedCommands.contains(where: { $0 == "file" || $0.hasPrefix("file.") })
+    }
+
+    var hasCanvasCapabilityCommand: Bool {
+        advertisedCommands.contains(where: { $0 == "canvas" || $0.hasPrefix("canvas.") })
+    }
+
+    var hasMCPCapabilityCommand: Bool {
+        advertisedCommands.contains(where: { $0 == "mcp" || $0.hasPrefix("mcp.") })
+    }
+
+    var hasLocalInferenceCapabilityCommand: Bool {
+        advertisedCommands.contains(where: { $0 == "local-inference" || $0.hasPrefix("local-inference.") })
+    }
+
+    func advertisesNodeCommand(_ commandName: String) -> Bool {
+        advertisedCommands.contains(commandName)
+    }
+
+    func advertisesCapabilityDomain(_ capability: DexterOpenClawCapabilityKind) -> Bool {
+        switch capability {
+        case .computerAct:
+            return hasComputerActCommand
+        case .screenSnapshot:
+            return hasScreenSnapshotCommand
+        case .browserProxy:
+            return hasBrowserProxyCommand
+        case .systemRun:
+            return hasSystemRunCommand
+        case .file:
+            return hasFileCapabilityCommand
+        case .canvas:
+            return hasCanvasCapabilityCommand
+        case .mcp:
+            return hasMCPCapabilityCommand
+        case .localInference:
+            return hasLocalInferenceCapabilityCommand
+        }
     }
 
     static let unavailable = OpenClawNodeCapabilitySnapshot(
@@ -48,6 +120,7 @@ struct OpenClawNodeCapabilitySnapshot: Equatable {
         isPaired: false,
         isConnected: false,
         advertisedCommands: [],
+        computerUseDescriptor: .unavailable,
         permissions: .unavailable
     )
 }
@@ -72,12 +145,20 @@ enum OpenClawNodesStatusJSONParser {
             automationGranted: chosenNode.permissions?.accessibility == true
         )
 
+        let computerUseDescriptor = OpenClawNodeComputerUseDescriptorSnapshot(
+            providerIdentifier: chosenNode.computerUse?.provider?.id,
+            providerLabel: chosenNode.computerUse?.provider?.label,
+            contractVersion: chosenNode.computerUse?.contractVersion,
+            advertisedActions: chosenNode.computerUse?.actions ?? []
+        )
+
         return OpenClawNodeCapabilitySnapshot(
             nodeIdentifier: nodeIdentifier,
             displayName: chosenNode.displayName,
             isPaired: chosenNode.paired == true,
             isConnected: chosenNode.connected == true,
             advertisedCommands: chosenNode.commands ?? [],
+            computerUseDescriptor: computerUseDescriptor,
             permissions: permissionSnapshot
         )
     }
@@ -104,7 +185,19 @@ private struct OpenClawNodesStatusNode: Decodable {
     let paired: Bool?
     let connected: Bool?
     let commands: [String]?
+    let computerUse: OpenClawNodesStatusComputerUse?
     let permissions: OpenClawNodesStatusPermissions?
+}
+
+private struct OpenClawNodesStatusComputerUse: Decodable {
+    let contractVersion: Int?
+    let actions: [String]?
+    let provider: OpenClawNodesStatusComputerUseProvider?
+}
+
+private struct OpenClawNodesStatusComputerUseProvider: Decodable {
+    let id: String?
+    let label: String?
 }
 
 private struct OpenClawNodesStatusPermissions: Decodable {

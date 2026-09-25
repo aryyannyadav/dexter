@@ -24,7 +24,7 @@ final class AssemblyAIStreamingTranscriptionProvider: BuddyTranscriptionProvider
     var unavailableExplanation: String? {
         isConfigured
             ? nil
-            : "AssemblyAI worker endpoint is not configured. Set DexterWorkerBaseURL in Info.plist (see Secrets.xcconfig.example)."
+            : "AssemblyAI requires a configured Dexter worker proxy URL in the app bundle."
     }
 
     /// Single long-lived URLSession shared across all streaming sessions.

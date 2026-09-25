@@ -26,6 +26,8 @@ final class OpenClawGatewayHealthMonitor: ObservableObject {
     @Published private(set) var detectedOpenClawVersion: String?
     @Published private(set) var loopbackWebSocketURL: String?
     @Published private(set) var preferredNodeSnapshot: OpenClawNodeCapabilitySnapshot = .unavailable
+    @Published private(set) var capabilityDiscoveryReport: DexterOpenClawCapabilityDiscoveryReport =
+        DexterOpenClawCapabilityDiscovery.report(gatewayConnected: false, nodeSnapshot: .unavailable)
 
     var statusLine: String {
         switch connectionState {
@@ -159,6 +161,7 @@ final class OpenClawGatewayHealthMonitor: ObservableObject {
     @MainActor
     private func publishNodeSnapshot(_ nodeSnapshot: OpenClawNodeCapabilitySnapshot) {
         preferredNodeSnapshot = nodeSnapshot
+        refreshCapabilityDiscoveryReport()
     }
 
     @MainActor
@@ -172,6 +175,15 @@ final class OpenClawGatewayHealthMonitor: ObservableObject {
             detectedOpenClawVersion = version
         }
         loopbackWebSocketURL = loopbackURL
+        refreshCapabilityDiscoveryReport()
+    }
+
+    @MainActor
+    private func refreshCapabilityDiscoveryReport() {
+        capabilityDiscoveryReport = DexterOpenClawRuntimeCapabilityRegistry.buildDiscoveryReport(
+            gatewayConnected: connectionState.isConnected,
+            nodeSnapshot: preferredNodeSnapshot
+        )
     }
 
     private func readOpenClawVersion(executableURL: URL) async -> String? {

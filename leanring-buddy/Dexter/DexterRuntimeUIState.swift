@@ -81,6 +81,14 @@ enum DexterRuntimeUIStateResolver {
             )
         }
 
+        if voiceInteractionState == .transcribing {
+            return DexterRuntimeUIResolvedState(
+                state: .understanding,
+                detail: "Transcribing your voice",
+                failurePresentation: nil
+            )
+        }
+
         if let orchestratorPhaseOverride {
             let detail = orchestratorDetailOverride.isEmpty
                 ? defaultDetail(for: orchestratorPhaseOverride)
@@ -212,7 +220,11 @@ final class DexterRuntimeUIStateStore: ObservableObject {
     @Published private(set) var statusDetail: String = ""
     @Published private(set) var failurePresentation: DexterRuntimeUIFailurePresentation?
 
-    private var executionSnapshot: DexterExecutionMachineSnapshot?
+    private(set) var activeExecutionSnapshot: DexterExecutionMachineSnapshot?
+    private var executionSnapshot: DexterExecutionMachineSnapshot? {
+        get { activeExecutionSnapshot }
+        set { activeExecutionSnapshot = newValue }
+    }
     private var voiceInteractionState: DexterVoiceInteractionState = .idle
     private var orchestratorPhaseOverride: DexterRuntimeUIState?
     private var orchestratorDetailOverride: String = ""

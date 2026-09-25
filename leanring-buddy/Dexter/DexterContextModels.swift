@@ -7,7 +7,7 @@ import AppKit
 import Foundation
 
 /// Whether a context slice could be collected.
-enum DexterContextAvailability: Equatable {
+enum DexterContextAvailability: Equatable, Codable {
     case available
     case permissionMissing
     case notApplicable

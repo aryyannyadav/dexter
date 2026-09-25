@@ -52,6 +52,21 @@ enum DexterApplicationLifecycleIntentParser {
         "kill "
     ]
 
+    private static let listRunningApplicationPhrases = [
+        "list running applications",
+        "list running apps",
+        "what applications are running",
+        "what apps are running",
+        "show running applications",
+        "show running apps"
+    ]
+
+    static func matchesListRunningApplicationsIntent(normalizedUserMessage: String) -> Bool {
+        let normalizedMessage = normalizedUserMessage
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return listRunningApplicationPhrases.contains(normalizedMessage)
+    }
+
     static func parse(from normalizedUserMessage: String) -> DexterApplicationLifecycleIntent? {
         let normalizedMessage = normalizedUserMessage
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -121,7 +136,11 @@ enum DexterApplicationLifecycleIntentParser {
                 return nil
             }
 
-            return DexterApplicationLifecycleIntent(operation: operation, applicationName: applicationName)
+            let resolvedReference = DexterApplicationReferenceResolver.resolve(userInput: applicationName)
+            return DexterApplicationLifecycleIntent(
+                operation: operation,
+                applicationName: resolvedReference.displayName
+            )
         }
 
         return nil
@@ -133,16 +152,7 @@ enum DexterApplicationNameFormatter {
         let trimmedToken = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedToken.isEmpty else { return nil }
 
-        let lowercased = trimmedToken.lowercased()
-        if let demoName = DexterDemoApplicationNames.canonicalName(for: lowercased) {
-            return demoName
-        }
-
-        return trimmedToken
-            .split(separator: " ")
-            .map { word in
-                word.prefix(1).uppercased() + word.dropFirst()
-            }
-            .joined(separator: " ")
+        let resolvedReference = DexterApplicationReferenceResolver.resolve(userInput: trimmedToken)
+        return resolvedReference.displayName
     }
 }

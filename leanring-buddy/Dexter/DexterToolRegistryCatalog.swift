@@ -63,6 +63,17 @@ enum DexterToolRegistryCatalog {
             requiredOpenClawCapability: .computerAct
         ),
         DexterRegisteredToolDefinition(
+            name: .applicationListRunning,
+            description: "List running applications through the connected OpenClaw computer-use provider.",
+            inputSchemaJSON: #"{"type":"object","properties":{},"required":[]}"#,
+            riskLevel: .readOnly,
+            requiredPermissions: ["accessibility"],
+            runtime: .openClaw,
+            verificationStrategy: .commandOutput,
+            supportsCancellation: true,
+            requiredOpenClawCapability: .computerAct
+        ),
+        DexterRegisteredToolDefinition(
             name: .mouseClick,
             description: "Click at screen coordinates.",
             inputSchemaJSON: #"{"type":"object","properties":{"x":{"type":"string"},"y":{"type":"string"},"label":{"type":"string"}},"required":["x","y"]}"#,

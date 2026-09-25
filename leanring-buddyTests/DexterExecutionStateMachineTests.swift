@@ -155,6 +155,17 @@ struct DexterExecutionStateMachineTests {
         }
     }
 
+    @Test func permissionApprovalClearsPriorCancellationWhileWaiting() throws {
+        let machine = DexterExecutionStateMachine(actionIdentifier: UUID())
+        try machine.transition(to: .understanding, progressSummary: "Understanding.")
+        try machine.transition(to: .planning, progressSummary: "Planning.")
+        try machine.transition(to: .waitingPermission, progressSummary: "Waiting.")
+        machine.requestCancellation()
+        machine.acknowledgePermissionApproval()
+        try machine.checkContinuationAllowed()
+        #expect(machine.snapshot.isCancellationRequested == false)
+    }
+
     @Test @MainActor func registryStoresLatestSnapshot() throws {
         let registry = DexterExecutionStateMachineRegistry()
         let machine = DexterExecutionStateMachine(actionIdentifier: UUID())

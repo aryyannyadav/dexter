@@ -36,6 +36,12 @@ struct DexterToolRegistryTests {
         isPaired: true,
         isConnected: true,
         advertisedCommands: ["computer.act", "screen.snapshot", "browser.proxy", "system.run"],
+        computerUseDescriptor: OpenClawNodeComputerUseDescriptorSnapshot(
+            providerIdentifier: "peekaboo",
+            providerLabel: "Peekaboo",
+            contractVersion: 2,
+            advertisedActions: OpenClawNodeComputerUseDescriptorSnapshot.dexterMappedComputerUseActions
+        ),
         permissions: OpenClawNodePermissionSnapshot(
             accessibilityGranted: true,
             screenRecordingGranted: true,
@@ -52,6 +58,7 @@ struct DexterToolRegistryTests {
                 isPaired: true,
                 isConnected: false,
                 advertisedCommands: connectedNodeSnapshot.advertisedCommands,
+                computerUseDescriptor: connectedNodeSnapshot.computerUseDescriptor,
                 permissions: connectedNodeSnapshot.permissions
             )
         return DexterOpenClawCapabilityDiscovery.report(gatewayConnected: true, nodeSnapshot: snapshot)

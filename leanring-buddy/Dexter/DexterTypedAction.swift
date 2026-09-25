@@ -12,6 +12,7 @@ enum DexterActionType: String, Equatable, CaseIterable {
     case openApplication = "OpenApplication"
     case focusApplication = "FocusApplication"
     case quitApplication = "QuitApplication"
+    case listRunningApplications = "ListRunningApplications"
     case openURL = "OpenURL"
     case click = "Click"
     case typeText = "TypeText"
@@ -132,6 +133,19 @@ enum DexterActionFactory {
         )
     }
 
+    static func listRunningApplications(contextSummary: String? = nil) -> DexterAction {
+        var parameters: [String: String] = [:]
+        if let contextSummary {
+            parameters["contextSummary"] = contextSummary
+        }
+        return DexterAction(
+            type: .listRunningApplications,
+            parameters: parameters,
+            riskLevel: .readOnly,
+            humanReadableDescription: "List running applications."
+        )
+    }
+
     private static func applicationLifecycleAction(
         type: DexterActionType,
         applicationName: String,
@@ -139,7 +153,11 @@ enum DexterActionFactory {
         riskLevel: DexterActionRiskLevel,
         humanReadableDescription: String
     ) -> DexterAction {
-        var parameters = ["applicationName": applicationName]
+        let resolvedApplicationReference = DexterApplicationReferenceResolver.resolve(userInput: applicationName)
+        var parameters = DexterActionOutcomePlanner.lifecycleMetadataParameters(
+            for: type,
+            resolvedApplicationReference: resolvedApplicationReference
+        )
         if let contextSummary {
             parameters["contextSummary"] = contextSummary
         }

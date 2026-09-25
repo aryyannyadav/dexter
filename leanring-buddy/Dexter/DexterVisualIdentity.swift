@@ -2,7 +2,7 @@
 //  DexterVisualIdentity.swift
 //  leanring-buddy
 //
-//  Original Dexter brand tokens — graphite surfaces + signal cyan accent.
+//  Legacy panel / menu-bar tokens — graphite surfaces + companion pastel accent.
 //
 
 import SwiftUI
@@ -11,10 +11,11 @@ enum DexterIdentity {
     static let windowMinWidth: CGFloat = 640
     static let sidebarExpandedWidth: CGFloat = 240
 
-    static let accent = Color(hex: "#22D3EE")
-    static let accentSecondary = Color(hex: "#38BDF8")
-    static let accentSubtle = Color(hex: "#22D3EE").opacity(0.12)
-    static let accentBorder = Color(hex: "#22D3EE").opacity(0.35)
+    /// Companion product accent (pastel; user theme cyan remains on `DexterColors.accentCyan` for opt-in surfaces).
+    static let accent = DexterPastelColors.lavender
+    static let accentSecondary = DexterPastelColors.sky
+    static let accentSubtle = DexterPastelColors.lavender.opacity(0.14)
+    static let accentBorder = DexterPastelColors.lavender.opacity(0.38)
 
     static let panelWidth: CGFloat = 340
     static let panelCornerRadius: CGFloat = 14

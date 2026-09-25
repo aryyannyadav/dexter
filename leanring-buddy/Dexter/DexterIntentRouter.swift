@@ -305,6 +305,9 @@ enum DexterIntentRouter {
     }
 
     private static func matchesTeachIntent(_ normalizedMessage: String) -> Bool {
+        if DexterPointerControlWorkflow.matchesPointerTeachIntent(normalizedUserMessage: normalizedMessage) {
+            return true
+        }
         let phrases = ["teach me", "help me learn", "i want to learn", "teach me this", "teach me that"]
         return phrases.contains { normalizedMessage.contains($0) }
     }

@@ -26,10 +26,13 @@ enum DexterTurnTrace {
         currentTurnIdentifier = nil
     }
 
-    static func finish(outcome: DexterTurnOutcome) {
-        let operationalOutcome = DexterTaskTraceRecorder.mapTurnOutcome(outcome)
-        DexterTaskTraceRecorder.shared.endTask(outcome: operationalOutcome)
-        log("outcome=\(operationalOutcome.rawValue)")
+    static func finish(
+        outcome: DexterTurnOutcome,
+        operationalOutcome: DexterOperationalOutcomeCategory? = nil
+    ) {
+        let resolvedOperationalOutcome = operationalOutcome ?? DexterTaskTraceRecorder.mapTurnOutcome(outcome)
+        DexterTaskTraceRecorder.shared.endTask(outcome: resolvedOperationalOutcome)
+        log("outcome=\(resolvedOperationalOutcome.rawValue)")
         endTurn()
     }
 

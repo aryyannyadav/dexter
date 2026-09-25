@@ -132,8 +132,6 @@ enum DexterPersonalContextGraphBuilder {
                 if primaryTaskEntityIdentifier == nil {
                     primaryTaskEntityIdentifier = entityIdentifier
                 }
-            case .goal:
-                primaryGoalEntityIdentifier = entityIdentifier
             case .commitment:
                 if let taskEntityIdentifier = primaryTaskEntityIdentifier {
                     relationships.append(
@@ -144,7 +142,7 @@ enum DexterPersonalContextGraphBuilder {
                         )
                     )
                 }
-            case .semantic, .episodic, .workflow, .preference, .project, .task, .goal, .commitment:
+            case .semantic, .episodic, .workflow:
                 break
             }
         }
@@ -235,7 +233,6 @@ enum DexterPersonalContextGraphBuilder {
         case .workflow: return .workflow
         case .preference: return .preference
         case .task: return .task
-        case .goal: return .goal
         case .commitment: return .commitment
         }
     }

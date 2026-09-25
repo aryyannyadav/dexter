@@ -161,7 +161,7 @@ enum OpenClawComputerActRequestBuilder {
         computerActParametersJSON(
             executionIdentifier: executionIdentifier,
             actionName: "launch_app",
-            fields: ["app": applicationName]
+            fields: ["app": .string(applicationName)]
         )
     }
 
@@ -172,7 +172,7 @@ enum OpenClawComputerActRequestBuilder {
         computerActParametersJSON(
             executionIdentifier: executionIdentifier,
             actionName: "kill_app",
-            fields: ["app": applicationName]
+            fields: ["app": .string(applicationName)]
         )
     }
 
@@ -180,21 +180,22 @@ enum OpenClawComputerActRequestBuilder {
         computerActParametersJSON(
             executionIdentifier: executionIdentifier,
             actionName: "__close_execution",
-            fields: ["reason": reason]
+            fields: ["reason": .string(reason)]
         )
     }
 
     static func computerActParametersJSON(
         executionIdentifier: String,
         actionName: String,
-        fields: [String: String]
+        fields: [String: OpenClawComputerActJSONValue] = [:]
     ) -> String {
+        let normalizedExecutionIdentifier = executionIdentifier.lowercased()
         var payload: [String: Any] = [
-            "executionId": executionIdentifier,
+            "executionId": normalizedExecutionIdentifier,
             "action": actionName
         ]
         for (fieldKey, fieldValue) in fields {
-            payload[fieldKey] = fieldValue
+            payload[fieldKey] = fieldValue.anyJSONValue
         }
 
         guard let data = try? JSONSerialization.data(withJSONObject: payload),

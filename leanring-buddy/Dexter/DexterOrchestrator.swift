@@ -17,19 +17,28 @@ struct DexterModelGenerationOptions: Equatable {
     var hasPersistedScreenContentGrant: Bool
     var pointerLocationInScreenSpaceOverride: CGPoint?
     var usePointAtContextRelevancePlan: Bool
+    var routingDecision: DexterRequestRoutingDecision?
+    var activeDexterProfileId: UUID?
+    var activeFileWorkspaceId: UUID?
 
     nonisolated init(
         screenCaptureOverride: [DexterScreenCaptureSnapshot]? = nil,
         includeSessionConversationHistory: Bool = true,
         hasPersistedScreenContentGrant: Bool = false,
         pointerLocationInScreenSpaceOverride: CGPoint? = nil,
-        usePointAtContextRelevancePlan: Bool = false
+        usePointAtContextRelevancePlan: Bool = false,
+        routingDecision: DexterRequestRoutingDecision? = nil,
+        activeDexterProfileId: UUID? = nil,
+        activeFileWorkspaceId: UUID? = nil
     ) {
         self.screenCaptureOverride = screenCaptureOverride
         self.includeSessionConversationHistory = includeSessionConversationHistory
         self.hasPersistedScreenContentGrant = hasPersistedScreenContentGrant
         self.pointerLocationInScreenSpaceOverride = pointerLocationInScreenSpaceOverride
         self.usePointAtContextRelevancePlan = usePointAtContextRelevancePlan
+        self.routingDecision = routingDecision
+        self.activeDexterProfileId = activeDexterProfileId
+        self.activeFileWorkspaceId = activeFileWorkspaceId
     }
 }
 
@@ -71,7 +80,10 @@ final class DexterOrchestrator {
     let proactiveAutomationSettingsStore: DexterProactiveAutomationSettingsStore
     private(set) var lastProactivePipelineOutcome: DexterProactivePipelineOutcome?
     let workspaceSnapshotStore: DexterWorkspaceSnapshotStore
+    let fileWorkspaceStore: DexterFileWorkspaceStore
     let actionRecoveryLedger: DexterActionRecoveryLedger
+    weak var activityRecorder: DexterActivityRecorder?
+    var activityLinkageProvider: (() -> DexterActivityLinkage)?
 
     init(
         contextAssembler: DexterContextAssembler,
@@ -92,6 +104,7 @@ final class DexterOrchestrator {
         teachingSessionStore: DexterTeachingSessionStore? = nil,
         proactiveAutomationSettingsStore: DexterProactiveAutomationSettingsStore? = nil,
         workspaceSnapshotStore: DexterWorkspaceSnapshotStore? = nil,
+        fileWorkspaceStore: DexterFileWorkspaceStore? = nil,
         actionRecoveryLedger: DexterActionRecoveryLedger? = nil
     ) {
         self.contextAssembler = contextAssembler
@@ -118,10 +131,11 @@ final class DexterOrchestrator {
         self.proactiveAutomationSettingsStore = proactiveAutomationSettingsStore
             ?? UserDefaultsDexterProactiveAutomationSettingsStore()
         self.workspaceSnapshotStore = workspaceSnapshotStore ?? DexterWorkspaceSnapshotStore()
+        self.fileWorkspaceStore = fileWorkspaceStore ?? DexterFileWorkspaceStore()
         self.actionRecoveryLedger = actionRecoveryLedger ?? DexterActionRecoveryLedger()
 
         if let runtimeUIStateStore = demonstrationPhaseStore {
-            executionStateMachineRegistry.onExecutionSnapshotChanged = { snapshot in
+            self.executionStateMachineRegistry.onExecutionSnapshotChanged = { snapshot in
                 runtimeUIStateStore.applyExecutionSnapshot(snapshot)
             }
         }
@@ -251,6 +265,10 @@ final class DexterOrchestrator {
         let resumedStateMachine = pending.executionIdentifier.flatMap {
             executionStateMachineRegistry.machine(forExecutionIdentifier: $0)
         }
+        resumedStateMachine?.acknowledgePermissionApproval()
+        if DexterComputerControlAuthorizationScope.actionQualifiesForSessionReuse(pending.action) {
+            actionPermissionSettingsStore.isComputerControlAuthorizedForSession = true
+        }
         return await executeVerifiedAction(
             proposedAction: pending.action,
             context: pending.context,
@@ -310,7 +328,8 @@ final class DexterOrchestrator {
             pointerLocationInScreenSpace: pointerLocationInScreenSpace,
             capturedAt: Date(),
             contextSnapshot: contextSnapshot,
-            screenCaptureSnapshots: dexterContext.screen.allScreens
+            screenCaptureSnapshots: dexterContext.screen.allScreens,
+            pointerSemanticTarget: dexterContext.pointer?.semanticTarget
         )
     }
 
@@ -323,6 +342,7 @@ final class DexterOrchestrator {
         options: DexterModelGenerationOptions = DexterModelGenerationOptions(),
         onTextChunk: @escaping @MainActor @Sendable (String) -> Void = { _ in }
     ) async throws -> DexterOrchestratorModelResponse {
+        applyMemoryBinding(from: options)
         memoryStore.observeUserMessageForInference(userTranscript)
         let memoryIntentOutcome = memoryStore.processMemoryIntents(fromUserMessage: userTranscript)
         switch memoryIntentOutcome {
@@ -345,17 +365,6 @@ final class DexterOrchestrator {
             )
         }
 
-        if memoryIntentOutcome == .noMemoryIntent,
-           let inferencePrompt = memoryStore.consumeInferenceConfirmationPrompt() {
-            demonstrationPhaseStore?.transition(to: .done, detail: "Memory suggestion")
-            await onTextChunk(inferencePrompt)
-            return DexterOrchestratorModelResponse(
-                fullResponseText: inferencePrompt,
-                context: DexterContext(userMessage: DexterUserMessageContext(text: userTranscript)),
-                responseMode: .answer
-            )
-        }
-
         demonstrationPhaseStore?.transition(
             to: DexterDemonstrationPhase.seeing,
             detail: "Screenshot, pointer, active app, and window"
@@ -366,16 +375,22 @@ final class DexterOrchestrator {
             screenCaptureMode = .useOverride(screenCaptureOverride)
         } else if options.usePointAtContextRelevancePlan {
             screenCaptureMode = .captureAllDisplaysIfPermitted
+        } else if let routingDecision = options.routingDecision {
+            screenCaptureMode = routingDecision.requiresScreenCapture
+                ? .captureCursorDisplayIfPermitted
+                : .skip
         } else if DexterContextRelevancePlanner.shouldRequestScreenCapture(forUserMessage: userTranscript) {
             screenCaptureMode = .captureCursorDisplayIfPermitted
-        } else if DexterContextRelevancePlanner.shouldSkipScreenCapture(forUserMessage: userTranscript) {
-            screenCaptureMode = .skip
         } else {
             screenCaptureMode = .skip
         }
 
         if screenCaptureMode != .skip {
             DexterVisionTiming.beginVisionTurn()
+        }
+
+        if let routingDecision = options.routingDecision {
+            DexterTurnTrace.log("request_route=\(routingDecision.route.rawValue)")
         }
 
         switch screenCaptureMode {
@@ -389,8 +404,12 @@ final class DexterOrchestrator {
             DexterTurnTrace.log("screen capture mode=override")
         }
 
-        let contextPerformanceProfile: DexterContextPerformanceProfile =
-            DexterTrivialQuestionClassifier.isTrivialQuestion(userTranscript) ? .minimal : .standard
+        let contextPerformanceProfile: DexterContextPerformanceProfile = {
+            if let routingDecision = options.routingDecision {
+                return routingDecision.contextPerformanceProfile
+            }
+            return DexterTrivialQuestionClassifier.isTrivialQuestion(userTranscript) ? .minimal : .standard
+        }()
 
         let assemblyRequest = DexterContextAssemblyRequest(
             userMessage: userTranscript,
@@ -399,7 +418,9 @@ final class DexterOrchestrator {
             recentConversationLimit: 8,
             hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
             pointerLocationInScreenSpaceOverride: options.pointerLocationInScreenSpaceOverride,
-            performanceProfile: contextPerformanceProfile
+            performanceProfile: contextPerformanceProfile,
+            activeDexterProfileId: options.activeDexterProfileId,
+            activeFileWorkspaceId: options.activeFileWorkspaceId
         )
 
         DexterTurnTrace.log("context assembly started")
@@ -410,7 +431,15 @@ final class DexterOrchestrator {
                 await contextAssembler.assembleContextPacket(request: assemblyRequest)
             }
         }
-        let dexterContext = assemblyResult.legacyContext
+        var dexterContext = assemblyResult.legacyContext
+        if let profileId = options.activeDexterProfileId {
+            dexterContext = DexterFileWorkspaceContextProvider.attachWorkspaceContext(
+                to: dexterContext,
+                profileId: profileId,
+                userMessage: userTranscript,
+                store: fileWorkspaceStore
+            )
+        }
         let contextPacket = assemblyResult.packet
         lastAssembledContext = dexterContext
         DexterTurnTrace.log("context returned")
@@ -663,10 +692,15 @@ final class DexterOrchestrator {
             hasAttachedScreenshot: !structuredModelRequest.images.isEmpty
         )
 
+        let personalizationHint = DexterPersonalizationService.explanationStyleHint(
+            from: dexterContext.persistentMemory.retrievedMemories
+        )
+
         let combinedSystemPrompt: String = [
             systemPrompt,
             teachingInstructions,
             honestyInstructions,
+            personalizationHint ?? "",
             DexterExternalContentAuthorityPolicy.externalContentIsDataNotAuthorityInstruction
         ]
             .filter { !$0.isEmpty }
@@ -675,7 +709,7 @@ final class DexterOrchestrator {
         var preparedVisionPayload: DexterPreparedVisionPayload?
         var visionRequest: DexterVisionRequest?
         if !structuredModelRequest.images.isEmpty {
-            preparedVisionPayload = DexterVisionRequestPreparer.preparePayload(
+            preparedVisionPayload = await DexterVisionRequestPreparer.preparePayloadAsync(
                 dexterContext: dexterContext,
                 userMessage: userTranscript
             )
@@ -705,6 +739,7 @@ final class DexterOrchestrator {
         DexterDiagnosticLog.model("generation started (images: \(generationRequest.images.count))")
         DexterTurnTrace.log("awaiting model (timeout \(Int(modelTimeoutSeconds))s)")
         DexterTurnTrace.log("model request started")
+        DexterPerformanceTiming.markModelGenerationStarted()
         let preferredCloudModelIdentifier = (modelProvider as? DexterModelGateway)?.preferredCloudModelIdentifier
             ?? modelProvider.modelIdentifier
         let modelRoutingContext = DexterModelGatewayRoutingContext.inferred(
@@ -774,6 +809,7 @@ final class DexterOrchestrator {
             actionStore: actionStore,
             actionHistoryStore: actionHistoryStore,
             actionPermissionSettings: actionPermissionSettingsStore.currentSettings,
+            isComputerControlAuthorizedForSession: actionPermissionSettingsStore.isComputerControlAuthorizedForSession,
             hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
             confirmationGrant: confirmationGrant,
             demonstrationPhaseStore: demonstrationPhaseStore,
@@ -787,6 +823,13 @@ final class DexterOrchestrator {
         lastExecutionSnapshot = outcome.executionSnapshot
         if let executionSnapshot = outcome.executionSnapshot {
             demonstrationPhaseStore?.applyExecutionSnapshot(executionSnapshot)
+        }
+        if let activityRecorder, let linkage = activityLinkageProvider?() {
+            activityRecorder.recordActionExecutionOutcome(
+                outcome: outcome,
+                linkage: linkage,
+                userRequest: context.userTranscript
+            )
         }
         return outcome
     }
@@ -901,7 +944,7 @@ final class DexterOrchestrator {
         )
 
         if restoreResult.stoppedAwaitingPermission {
-            demonstrationPhaseStore?.transition(to: .waitingForApproval, detail: "Workspace restore")
+            demonstrationPhaseStore?.transition(to: .waitingPermission, detail: "Workspace restore")
         } else {
             demonstrationPhaseStore?.transition(to: .done, detail: "Workspace restore")
         }
@@ -1061,6 +1104,21 @@ final class DexterOrchestrator {
             }
             DexterActionDiagnosticLog.plan("action=\(proposedAction.humanReadableDescription)")
 
+            let capabilityInput = await toolRegistryGateway.productCapabilityBuildInput()
+            let productCapabilities = DexterProductCapabilityRegistry.buildCapabilities(input: capabilityInput)
+            switch DexterActionCapabilityGate.evaluate(action: proposedAction, capabilities: productCapabilities) {
+            case .allowed:
+                break
+            case .blocked(let userMessage):
+                demonstrationPhaseStore?.transition(to: .done, detail: userMessage)
+                await onTextChunk(userMessage)
+                return DexterOrchestratorModelResponse(
+                    fullResponseText: userMessage,
+                    context: context,
+                    responseMode: responseMode
+                )
+            }
+
             let executionStateMachine = DexterExecutionStateMachine(
                 actionIdentifier: proposedAction.id,
                 parentTaskIdentifier: taskStateStore.activeWorkflowTask?.id
@@ -1094,6 +1152,18 @@ final class DexterOrchestrator {
             )
         }
     }
+
+    private func applyMemoryBinding(from options: DexterModelGenerationOptions) {
+        guard let defaultStore = memoryStore as? DefaultMemoryStore else { return }
+        if let profileId = options.activeDexterProfileId,
+           let workspaceId = options.activeFileWorkspaceId {
+            defaultStore.currentMemoryBinding = .forWorkspace(profileId: profileId, fileWorkspaceId: workspaceId)
+        } else if let profileId = options.activeDexterProfileId {
+            defaultStore.currentMemoryBinding = .forDexterProfile(profileId)
+        } else {
+            defaultStore.currentMemoryBinding = .global
+        }
+    }
 }
 
 @MainActor
@@ -1101,7 +1171,8 @@ enum DexterOrchestratorFactory {
     static func makeDefault(
         ollamaProvider: OllamaProvider,
         demonstrationPhaseStore: DexterDemonstrationPhaseStore? = nil,
-        demonstrationSessionStore: DexterDemonstrationSessionStore? = nil
+        demonstrationSessionStore: DexterDemonstrationSessionStore? = nil,
+        fileWorkspaceStore: DexterFileWorkspaceStore? = nil
     ) -> DexterOrchestrator {
         let ollamaModelProvider = OllamaModelProviderAdapter(aiProvider: ollamaProvider)
         let claudeModelProvider: ClaudeModelProvider? = {
@@ -1147,7 +1218,8 @@ enum DexterOrchestratorFactory {
             actionContextObserver: actionContextObserver,
             taskStateStore: taskStateStore,
             demonstrationPhaseStore: demonstrationPhaseStore,
-            demonstrationSessionStore: demonstrationSessionStore ?? DexterDemonstrationSessionStore()
+            demonstrationSessionStore: demonstrationSessionStore ?? DexterDemonstrationSessionStore(),
+            fileWorkspaceStore: fileWorkspaceStore
         )
     }
 }

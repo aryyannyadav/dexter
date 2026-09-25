@@ -63,6 +63,19 @@ enum DexterActionVerificationEngine {
     static var applicationLifecycleProbe: DexterApplicationLifecycleVerificationProbing =
         SystemDexterApplicationLifecycleVerificationProbe()
 
+    @MainActor
+    static func applicationNameForVerification(action: DexterAction) -> String {
+        if let bundleIdentifier = action.parameters["bundleIdentifier"]?.nonEmptyTrimmedValue,
+           let applicationURL = DexterInstalledApplicationLauncher.resolveApplicationURL(
+               matchingBundleIdentifier: bundleIdentifier
+           ),
+           let displayName = Bundle(url: applicationURL)?.object(forInfoDictionaryKey: "CFBundleName") as? String,
+           !displayName.isEmpty {
+            return displayName
+        }
+        return action.parameters["applicationName"] ?? "the application"
+    }
+
     static func requiresPostExecutionObservationSettle(for action: DexterAction) -> Bool {
         switch action.type {
         case .openApplication, .focusApplication, .quitApplication:
@@ -102,6 +115,9 @@ enum DexterActionVerificationEngine {
                 action: action,
                 executionResult: executionResult
             )
+
+        case .listRunningApplications:
+            return verifyListRunningApplications(executionResult: executionResult)
 
         case .click:
             if action.parameters["browserAction"] != nil {
@@ -164,7 +180,7 @@ enum DexterActionVerificationEngine {
         expectedRunning: Bool,
         requireFrontmost: Bool = false
     ) -> DexterActionVerificationReport {
-        let intendedApplicationName = action.parameters["applicationName"] ?? "the application"
+        let intendedApplicationName = applicationNameForVerification(action: action)
         let verb = requireFrontmost ? "focused" : "open"
         let expectedStateDescription = requireFrontmost
             ? "\(intendedApplicationName) should be running and frontmost."
@@ -268,7 +284,7 @@ enum DexterActionVerificationEngine {
         action: DexterAction,
         executionResult: AgentActionResult
     ) -> DexterActionVerificationReport {
-        let intendedApplicationName = action.parameters["applicationName"] ?? "the application"
+        let intendedApplicationName = applicationNameForVerification(action: action)
         let expectedStateDescription = "\(intendedApplicationName) must not have a running process."
 
         let launchSignals = applicationLifecycleProbe.verificationSignals(forApplicationName: intendedApplicationName)
@@ -340,6 +356,37 @@ enum DexterActionVerificationEngine {
         ]
     }
 
+    private static func verifyListRunningApplications(
+        executionResult: AgentActionResult
+    ) -> DexterActionVerificationReport {
+        let expectedStateDescription = "OpenClaw list_apps should return running application metadata."
+        let output = executionResult.rawOutput?.nonEmptyTrimmedValue ?? ""
+
+        if executionResult.reportedSuccess, !output.isEmpty {
+            return DexterActionVerificationReport(
+                status: .verified,
+                summary: "Verified — received running application list from OpenClaw.",
+                expectedStateDescription: expectedStateDescription,
+                observedStateDescription: "list_apps_output_bytes=\(output.count)",
+                confidence: 0.9,
+                evidence: ["list_apps_output_present=true"],
+                reason: "OpenClaw returned non-empty list_apps output."
+            )
+        }
+
+        let failureMessage = executionResult.message.nonEmptyTrimmedValue
+            ?? "Could not list running applications."
+        return DexterActionVerificationReport(
+            status: .failed,
+            summary: "Verification failed: \(failureMessage)",
+            expectedStateDescription: expectedStateDescription,
+            observedStateDescription: "list_apps_output_bytes=\(output.count)",
+            confidence: 0.85,
+            evidence: ["list_apps_output_present=\(!output.isEmpty)"],
+            reason: failureMessage
+        )
+    }
+
     private static func verifyClick(
         action: DexterAction,
         observationBefore: DexterActionObservationSnapshot,
@@ -347,6 +394,19 @@ enum DexterActionVerificationEngine {
         executionResult: AgentActionResult
     ) -> DexterActionVerificationReport {
         let expectedStateDescription = "The UI should change after clicking \(action.parameters["label"] ?? "the target")."
+
+        if let coordinateFrameIdentifier = action.parameters["displayFrameId"]?.nonEmptyTrimmedValue,
+           let observationFrameIdentifier = action.parameters["postActionDisplayFrameId"]?.nonEmptyTrimmedValue,
+           coordinateFrameIdentifier != observationFrameIdentifier {
+            return DexterActionVerificationReport(
+                status: .unavailable,
+                summary:
+                    "Dexter could not verify the click because the screen frame changed after the action. Try again after the display settles.",
+                expectedStateDescription: expectedStateDescription,
+                observedStateDescription:
+                    "Coordinate frame \(coordinateFrameIdentifier) no longer matches fresh observation \(observationFrameIdentifier)."
+            )
+        }
 
         guard observationAfter.hasAccessibilityObservation else {
             return DexterActionVerificationReport(

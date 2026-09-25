@@ -26,8 +26,8 @@ enum DexterVisualStudioCodeWindowParser {
             || withoutDirtyMarker.lowercased().contains("problem")
 
         if components.count >= 2 {
-            let fileName = components.first.map(String.init)
-            let workspaceName = components.dropFirst().first.map(String.init)
+            let fileName = components.first.map { String($0) }
+            let workspaceName = components.dropFirst().first.map { String($0) }
             return ParsedWindow(
                 workspaceName: workspaceName,
                 fileName: fileName,

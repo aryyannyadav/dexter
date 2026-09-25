@@ -158,7 +158,7 @@ enum DexterActionRecoveryMetadataBuilder {
                 || action.parameters["url"]?.nonEmptyTrimmedValue != nil
         case .scroll:
             return false
-        case .inspectScreen, .explainContent, .click, .typeText, .keyboardShortcut, .select,
+        case .inspectScreen, .explainContent, .listRunningApplications, .click, .typeText, .keyboardShortcut, .select,
              .runTask, .quitApplication, .fileOperation, .terminalOperation:
             return false
         }

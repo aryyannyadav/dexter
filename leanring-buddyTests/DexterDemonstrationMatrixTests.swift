@@ -61,7 +61,14 @@ struct DexterDemonstrationMatrixTests {
         }
         let openClawPlan = OpenClawDexterToolInvokePlanner.plan(
             toolInvocation: toolInvocation,
-            executionIdentifier: "demo-open-calculator"
+            executionIdentifier: "a1b2c3d4-e5f6-4789-abcd-ef0123456789",
+            computerUseDescriptor: OpenClawNodeComputerUseDescriptorSnapshot(
+                providerIdentifier: "peekaboo",
+                providerLabel: "Peekaboo",
+                contractVersion: 2,
+                advertisedActions: OpenClawNodeComputerUseDescriptorSnapshot.dexterMappedComputerUseActions
+            ),
+            advertisedCommands: ["computer.act"]
         )
         #expect(openClawPlan?.parametersJSON.contains("launch_app") == true)
         #expect(openClawPlan?.parametersJSON.contains("Calculator") == true)

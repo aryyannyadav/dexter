@@ -7,7 +7,6 @@ import SwiftUI
 
 struct DexterSidebar: View {
     @ObservedObject var companionManager: CompanionManager
-    @Binding var selection: DexterMainWindowDestination
     var isCollapsed: Bool
 
     var body: some View {
@@ -131,79 +130,35 @@ struct DexterSidebar: View {
 
     private var sidebarFooter: some View {
         VStack(spacing: 4) {
-            sidebarNavButton(
-                title: "Chat",
-                systemImage: "bubble.left.and.bubble.right",
-                destination: .chat,
-                collapsed: isCollapsed
-            )
-            sidebarNavButton(
-                title: "Settings",
-                systemImage: "gearshape",
-                destination: .settings,
-                collapsed: isCollapsed
-            )
-        }
-    }
-
-    private func sidebarNavButton(
-        title: String,
-        systemImage: String,
-        destination: DexterMainWindowDestination,
-        collapsed: Bool
-    ) -> some View {
-        let isSelected = selection == destination
-        return Button {
-            selection = destination
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: systemImage)
-                    .frame(width: 18)
-                if !collapsed {
-                    Text(title)
-                        .font(DexterIdentity.Typography.bodyMedium())
+            Button {
+                NotificationCenter.default.post(name: .dexterOpenMainWindowSettings, object: nil)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "gearshape")
+                        .frame(width: 18)
+                    if !isCollapsed {
+                        Text("Settings")
+                            .font(DexterIdentity.Typography.bodyMedium())
+                    }
                 }
+                .foregroundColor(DS.Colors.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, isCollapsed ? 8 : 12)
+                .padding(.vertical, 8)
             }
-            .foregroundColor(isSelected ? DexterIdentity.accent : DS.Colors.textSecondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, collapsed ? 8 : 12)
-            .padding(.vertical, 8)
-            .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isSelected ? DexterIdentity.accentSubtle : Color.clear)
-            )
+            .buttonStyle(.plain)
+            .pointerCursor()
+            .accessibilityLabel("Settings")
         }
-        .buttonStyle(.plain)
-        .pointerCursor()
-        .accessibilityLabel(title)
     }
 }
 
+/// Legacy alias — prefer `DexterLogo` in new UI.
 struct DexterMark: View {
     var size: CGFloat = 24
 
     var body: some View {
-        ZStack {
-            DexterTriangleShape()
-                .fill(DexterIdentity.accent)
-                .frame(width: size * 0.75, height: size * 0.75)
-                .rotationEffect(.degrees(35))
-        }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
-    }
-}
-
-struct DexterTriangleShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        let top = CGPoint(x: rect.midX, y: rect.minY)
-        let bottomLeft = CGPoint(x: rect.minX, y: rect.maxY)
-        let bottomRight = CGPoint(x: rect.maxX, y: rect.maxY)
-        path.move(to: top)
-        path.addLine(to: bottomLeft)
-        path.addLine(to: bottomRight)
-        path.closeSubpath()
-        return path
+        DexterLogo(size: size, style: .standard, animated: false)
+            .accessibilityHidden(true)
     }
 }

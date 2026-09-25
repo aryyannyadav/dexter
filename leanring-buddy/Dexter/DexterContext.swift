@@ -65,6 +65,7 @@ struct DexterContext: Equatable {
     var personalContextGraph: DexterPersonalContextGraphSnapshot?
     var crossApplicationContext: DexterCrossApplicationContext?
     var attention: DexterAttentionContext
+    var fileWorkspaceContext: DexterFileWorkspaceContextSlice?
 
     init(
         userMessage: DexterUserMessageContext,
@@ -99,7 +100,8 @@ struct DexterContext: Equatable {
         persistentMemory: DexterPersistentMemoryContext = .empty,
         personalContextGraph: DexterPersonalContextGraphSnapshot? = nil,
         crossApplicationContext: DexterCrossApplicationContext? = nil,
-        attention: DexterAttentionContext? = nil
+        attention: DexterAttentionContext? = nil,
+        fileWorkspaceContext: DexterFileWorkspaceContextSlice? = nil
     ) {
         self.userMessage = userMessage
         let resolvedPointerLocation = pointer?.locationInScreenSpace ?? attention?.pointerLocationInScreenSpace ?? .zero
@@ -130,6 +132,7 @@ struct DexterContext: Equatable {
             ),
             primaryDisplayIdentifier: display?.displayIdentifier
         )
+        self.fileWorkspaceContext = fileWorkspaceContext
     }
 
     /// All screen captures from this invocation (empty when capture was skipped or denied).

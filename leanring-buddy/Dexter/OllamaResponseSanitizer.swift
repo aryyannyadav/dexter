@@ -14,10 +14,16 @@ enum OllamaResponseSanitizer {
 
     private static let redactedThinkingPattern = "(?s)<think>.*?</think>"
 
-    /// Returns user-visible assistant text only — never chain-of-thought / thinking fields.
-    static func userFacingAssistantText(content: String, separateThinkingField: String?) -> String {
+    /// Sanitizes a single Ollama stream delta without trimming edges.
+    /// Trimming each chunk drops whitespace-only tokens and removes spaces between streamed words.
+    static func userFacingAssistantStreamDelta(content: String, separateThinkingField: String?) -> String {
         _ = separateThinkingField
         return stripKnownThinkingMarkers(from: content)
+    }
+
+    /// Returns user-visible assistant text only — never chain-of-thought / thinking fields.
+    static func userFacingAssistantText(content: String, separateThinkingField: String?) -> String {
+        userFacingAssistantStreamDelta(content: content, separateThinkingField: separateThinkingField)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

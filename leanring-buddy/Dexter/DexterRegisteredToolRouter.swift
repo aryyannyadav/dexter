@@ -36,6 +36,13 @@ enum DexterRegisteredToolRouter {
                 actionIdentifier: DexterActionType.focusApplication.rawValue,
                 parameters: ["applicationName": applicationName]
             )
+        case .applicationListRunning:
+            return DexterToolInvocation(
+                registeredToolName: definition.name.rawValue,
+                toolKind: .listRunningApplications,
+                actionIdentifier: DexterActionType.listRunningApplications.rawValue,
+                parameters: [:]
+            )
         case .mouseClick:
             guard let x = proposal.parameters["x"], let y = proposal.parameters["y"] else { return nil }
             var parameters = ["x": x, "y": y]

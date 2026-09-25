@@ -90,4 +90,31 @@ struct OpenClawGatewayHealthMonitorTests {
         #expect(parametersJSON.contains("\"app\":\"Calculator\""))
         #expect(parametersJSON.contains("\"executionId\":\"00000000-0000-4000-8000-000000000001\""))
     }
+
+    @Test func computerUseExecutionIdentifierIsLowercaseUUID() {
+        let executionIdentifier = OpenClawComputerUseContract.newExecutionIdentifier()
+        #expect(OpenClawComputerUseContract.isValidExecutionIdentifier(executionIdentifier))
+        #expect(executionIdentifier == executionIdentifier.lowercased())
+    }
+
+    @Test func clickPlanUsesLeftClickContractAction() {
+        let clickPlan = OpenClawDexterToolInvokePlanner.plan(
+            toolInvocation: DexterToolInvocation(
+                toolKind: .click,
+                actionIdentifier: DexterActionType.click.rawValue,
+                parameters: ["x": "120", "y": "340"]
+            ),
+            executionIdentifier: "a1b2c3d4-e5f6-4789-abcd-ef0123456789",
+            computerUseDescriptor: OpenClawNodeComputerUseDescriptorSnapshot(
+                providerIdentifier: "peekaboo",
+                providerLabel: "Peekaboo",
+                contractVersion: 2,
+                advertisedActions: OpenClawNodeComputerUseDescriptorSnapshot.dexterMappedComputerUseActions
+            ),
+            advertisedCommands: ["computer.act"]
+        )
+        #expect(clickPlan?.parametersJSON.contains("\"action\":\"left_click\"") == true)
+        #expect(clickPlan?.parametersJSON.contains("\"x\":120") == true)
+        #expect(clickPlan?.parametersJSON.contains("\"y\":340") == true)
+    }
 }

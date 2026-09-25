@@ -148,7 +148,11 @@ final class OllamaProvider: AIProvider, ObservableObject {
         modelName
     }
 
-    private let endpointBaseURL: URL
+    var configuredVisionModelName: String {
+        OllamaModelConfiguration.visionModelName
+    }
+
+    private var endpointBaseURL: URL
     private var modelName: String
     private let urlSession: URLSession
 
@@ -157,13 +161,37 @@ final class OllamaProvider: AIProvider, ObservableObject {
         modelName: String = OllamaProvider.defaultModelName,
         urlSession: URLSession = .shared
     ) {
-        self.endpointBaseURL = endpointBaseURL
+        if let storedURL = DexterOllamaSettingsStore.shared.resolvedEndpointURL {
+            self.endpointBaseURL = storedURL
+        } else {
+            self.endpointBaseURL = endpointBaseURL
+        }
         self.modelName = modelName
         self.urlSession = urlSession
     }
 
     func setModelName(_ updatedModelName: String) {
         modelName = updatedModelName
+    }
+
+    func applyEndpointURLString(_ endpointURLString: String) {
+        let trimmed = endpointURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let resolvedURL = URL(string: trimmed), resolvedURL.scheme != nil else {
+            if let fallbackURL = URL(string: "http://\(trimmed)") {
+                endpointBaseURL = fallbackURL
+            }
+            return
+        }
+        endpointBaseURL = resolvedURL
+    }
+
+    func isVisionModelInstalled() async -> Bool {
+        do {
+            let installedModelNames = try await fetchInstalledModelNames()
+            return Self.modelNameIsAvailable(configuredVisionModelName, in: installedModelNames)
+        } catch {
+            return false
+        }
     }
 
     func refreshConnectionStatus() async {
@@ -395,7 +423,7 @@ final class OllamaProvider: AIProvider, ObservableObject {
                 continue
             }
             if let content = chunk.message?.content, !content.isEmpty {
-                let sanitizedChunk = OllamaResponseSanitizer.userFacingAssistantText(
+                let sanitizedChunk = OllamaResponseSanitizer.userFacingAssistantStreamDelta(
                     content: content,
                     separateThinkingField: nil
                 )

@@ -77,34 +77,19 @@ enum DexterOpenApplicationVerification {
     }
 
     private static func applicationNamesMatch(intendedName: String, bundleIdentifier: String) -> Bool {
+        if DexterApplicationReferenceResolver.bundleIdentifierMatches(
+            userInput: intendedName,
+            bundleIdentifier: bundleIdentifier
+        ) {
+            return true
+        }
         let normalizedIntended = normalizeApplicationName(intendedName)
         let normalizedBundle = bundleIdentifier.lowercased()
-        if normalizedBundle.contains(normalizedIntended) {
-            return true
-        }
-        if normalizedIntended == "safari" && normalizedBundle == "com.apple.safari" {
-            return true
-        }
-        if normalizedIntended == "calculator" && normalizedBundle == "com.apple.calculator" {
-            return true
-        }
-        if normalizedIntended == "music" && normalizedBundle == "com.apple.music" {
-            return true
-        }
-        if normalizedIntended == "terminal" && normalizedBundle == "com.apple.terminal" {
-            return true
-        }
-        if normalizedIntended == "whatsapp" && normalizedBundle.contains("whatsapp") {
-            return true
-        }
-        if normalizedIntended.contains("visual studio code") && normalizedBundle == "com.microsoft.vscode" {
-            return true
-        }
-        return false
+        return !normalizedIntended.isEmpty && normalizedBundle.contains(normalizedIntended)
     }
 
     private static func normalizeApplicationName(_ name: String) -> String {
-        name.lowercased().replacingOccurrences(of: ".app", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        DexterApplicationReferenceResolver.normalizeApplicationName(name)
     }
 
     private static func hasOnScreenWindow(forBundleIdentifier bundleIdentifier: String) -> Bool {

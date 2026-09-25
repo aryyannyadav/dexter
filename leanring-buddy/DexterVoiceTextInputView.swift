@@ -36,7 +36,7 @@ struct DexterVoiceTextInputView: View {
                         .foregroundColor(
                             typedMessageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                 ? DS.Colors.textTertiary
-                                : DS.Colors.accent
+                                : DexterPastelColors.lavender
                         )
                 }
                 .buttonStyle(.plain)

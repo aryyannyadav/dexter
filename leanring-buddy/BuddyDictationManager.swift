@@ -92,10 +92,13 @@ enum BuddyPushToTalkShortcut {
         case keyUp
     }
 
-    static let currentShortcutOption: ShortcutOption = .controlOption
+    static var currentShortcutOption: ShortcutOption {
+        DexterShortcutSettingsStore.shared.pushToTalkShortcutOption
+    }
+
     static let pushToTalkKeyCode: UInt16 = 49 // Space
-    static let pushToTalkDisplayText = currentShortcutOption.displayText
-    static let pushToTalkTooltipText = "push to talk (\(pushToTalkDisplayText))"
+    static var pushToTalkDisplayText: String { currentShortcutOption.displayText }
+    static var pushToTalkTooltipText: String { "push to talk (\(pushToTalkDisplayText))" }
 
     static func shortcutTransition(
         for event: NSEvent,
@@ -238,8 +241,15 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     @Published private(set) var speechToTextErrorMessage: String?
     @Published private(set) var currentPermissionProblem: BuddyDictationPermissionProblem?
 
+    /// Stored preference from Settings; applied when configuring the audio engine for a new session.
+    var preferredMicrophoneDeviceIdentifier: String?
+
     var isDictationInProgress: Bool {
         isPreparingToRecord || isRecordingFromMicrophoneButton || isRecordingFromKeyboardShortcut || isFinalizingTranscript
+    }
+
+    var speechToTextReadiness: DexterSpeechToTextReadiness {
+        DexterSpeechToTextStatusResolver.resolve(provider: transcriptionProvider)
     }
 
     var isActivelyRecordingAudio: Bool {
@@ -286,7 +296,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private var lastMicRuntimeBufferDiagnosticLogDate = Date.distantPast
     private var lastMicRawBufferDiagnosticLogDate = Date.distantPast
     private var currentMicLifecycleIdentifier: UUID?
-    private var isRawAudioOnlyWithoutTranscriptionProvider = false
     private var activeStartRequestIdentifier: UUID?
 
     override init() {
@@ -470,7 +479,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         hasLoggedSTTAudioForward = false
         lastMicRuntimeBufferDiagnosticLogDate = .distantPast
         lastMicRawBufferDiagnosticLogDate = .distantPast
-        isRawAudioOnlyWithoutTranscriptionProvider = false
         recordedAudioPowerHistory = Array(
             repeating: Self.recordedAudioPowerHistoryBaselineLevel,
             count: Self.recordedAudioPowerHistoryLength
@@ -522,10 +530,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
                 resetSessionState()
                 return
             }
-            speechToTextErrorMessage = userFacingErrorMessage(
-                from: error,
-                fallback: "couldn't start voice input. try again."
-            )
+            speechToTextErrorMessage = DexterSpeechToTextUserFacing.presentation(for: error).detail
             print("❌ BuddyDictationManager: failed to start recognition session (\(transcriptionProvider.displayName)): \(error)")
             resetSessionState()
         }
@@ -569,15 +574,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         activeTranscriptionSession?.requestFinalTranscript()
 
-        if isRawAudioOnlyWithoutTranscriptionProvider {
-            audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-            finishCurrentDictationSessionIfNeeded(
-                shouldSubmitFinalDraft: shouldAutomaticallySubmitFinalDraft
-            )
-            return
-        }
-
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
 
@@ -600,7 +596,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private func startRecognitionSession(lifecycleIdentifier: UUID) async throws {
         activeTranscriptionSession?.cancel()
         activeTranscriptionSession = nil
-        isRawAudioOnlyWithoutTranscriptionProvider = false
 
         try startRawAudioEngineCapture(lifecycleIdentifier: lifecycleIdentifier)
         DexterMicLifecycleLog.audioStarted(id: lifecycleIdentifier)
@@ -609,14 +604,22 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             throw CancellationError()
         }
 
-        guard DexterWorkerProxyClient.isWorkerBaseURLConfigured else {
-            DexterDiagnosticLog.stt("AssemblyAI unavailable: DexterWorkerBaseURL not configured")
-            isRawAudioOnlyWithoutTranscriptionProvider = true
-            return
+        guard transcriptionProvider.isConfigured else {
+            let readiness = DexterSpeechToTextStatusResolver.resolve(provider: transcriptionProvider)
+            DexterDiagnosticLog.stt("STT provider not configured: \(readiness.developerDiagnosticLine)")
+            throw DexterSpeechToTextProviderUnavailableError(
+                providerDisplayName: transcriptionProviderDisplayName,
+                developerDetail: readiness.developerDiagnosticLine
+            )
         }
 
         DexterMicLifecycleLog.providerOpening(id: lifecycleIdentifier)
         print("🎙️ BuddyDictationManager: opening transcription provider \(transcriptionProvider.displayName)")
+
+        let dictationPreferences = DexterDictationSettingsStore.shared
+        DexterDiagnosticLog.stt(
+            "dictation preferences autoDetect=\(dictationPreferences.isAutoDetectLanguageEnabled) language=\(dictationPreferences.selectedLanguageIdentifier)"
+        )
 
         let activeTranscriptionSession = try await transcriptionProvider.startStreamingSession(
             keyterms: buildTranscriptionKeyterms(),
@@ -656,6 +659,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     }
 
     private func startRawAudioEngineCapture(lifecycleIdentifier: UUID) throws {
+        if let preferredMicrophoneDeviceIdentifier {
+            DexterMicDiagnosticLog.log("preferred microphone device id=\(preferredMicrophoneDeviceIdentifier)")
+        }
+
         let inputNode = audioEngine.inputNode
         DexterMicRawLog.log("input node obtained")
         DexterMicRuntimeLog.log("input node obtained")
@@ -707,10 +714,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             )
         } else {
             print("❌ Buddy dictation error (\(transcriptionProvider.displayName)): \(error)")
-            speechToTextErrorMessage = userFacingErrorMessage(
-                from: error,
-                fallback: "couldn't transcribe that. try again."
-            )
+            speechToTextErrorMessage = DexterSpeechToTextUserFacing.presentation(for: error).detail
             cancelCurrentDictation(preserveDraftText: false)
         }
     }
@@ -730,20 +734,20 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             currentDraftCallbacks?.updateDraftText(finalDraftText)
         }
 
-        let wasRawAudioOnlyWithoutTranscriptionProvider = isRawAudioOnlyWithoutTranscriptionProvider
-
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         activeTranscriptionSession?.cancel()
 
-        resetSessionState()
+        guard shouldSubmitFinalDraft else {
+            resetSessionState()
+            return
+        }
 
-        guard shouldSubmitFinalDraft else { return }
         guard !finalTranscriptText.isEmpty else {
-            if wasRawAudioOnlyWithoutTranscriptionProvider {
-                speechToTextErrorMessage =
-                    "Speech-to-text is unavailable. Set DexterWorkerBaseURL in Info.plist (see Secrets.xcconfig.example)."
-            }
+            speechToTextErrorMessage = DexterSpeechToTextUserFacing
+                .presentationForEmptyTranscript(providerDisplayName: transcriptionProviderDisplayName)
+                .detail
+            resetSessionState()
             return
         }
 
@@ -751,6 +755,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         DexterMicRuntimeLog.log("transcript=\(finalTranscriptText)")
         DexterMicDiagnosticLog.log("transcript=\(finalTranscriptText)")
         currentDraftCallbacks?.submitDraftText(finalDraftText)
+        resetSessionState()
+    }
+
+    func clearSpeechToTextErrorMessage() {
+        speechToTextErrorMessage = nil
     }
 
     private func clearDictationErrorMessages() {
@@ -792,7 +801,6 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         isRecordingFromMicrophoneButton = false
         isRecordingFromKeyboardShortcut = false
         isKeyboardShortcutSessionActiveOrFinalizing = false
-        isRawAudioOnlyWithoutTranscriptionProvider = false
         currentMicLifecycleIdentifier = nil
         activeStartRequestIdentifier = nil
         isFinalizingTranscript = false
@@ -946,7 +954,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     private func requestMicrophoneAndSpeechPermissionsIfNeeded() async -> Bool {
         let hasMicrophonePermission = await requestMicrophonePermissionIfNeeded()
         guard hasMicrophonePermission else {
-            lastMicrophoneErrorMessage = "microphone permission is required for push to talk."
+            lastMicrophoneErrorMessage = "Microphone access is required for push-to-talk."
             return false
         }
 
@@ -956,7 +964,7 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         let hasSpeechRecognitionPermission = await requestSpeechRecognitionPermissionIfNeeded()
         guard hasSpeechRecognitionPermission else {
-            speechToTextErrorMessage = "speech recognition permission is required for push to talk."
+            speechToTextErrorMessage = "Allow Speech Recognition for Dexter in System Settings, then try again."
             return false
         }
 

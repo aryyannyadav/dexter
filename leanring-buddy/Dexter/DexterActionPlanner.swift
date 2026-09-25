@@ -24,6 +24,10 @@ enum DexterActionPlanner {
 
         let normalizedMessage = normalize(userMessage)
 
+        if DexterApplicationLifecycleIntentParser.matchesListRunningApplicationsIntent(normalizedUserMessage: normalizedMessage) {
+            return .action(DexterActionFactory.listRunningApplications(contextSummary: contextSummary(from: context)))
+        }
+
         if let lifecycleIntent = DexterApplicationLifecycleIntentParser.parse(from: normalizedMessage) {
             let plannedAction = action(for: lifecycleIntent, context: context)
             return .action(plannedAction)
@@ -69,7 +73,7 @@ enum DexterActionPlanner {
         }
 
         return .unsupported(
-            message: "Dexter can open, focus, or quit applications, run browser actions through OpenClaw, explain what you're pointing at, apply a taught code fix, or click the control under your pointer."
+            message: "Dexter can open, focus, quit, or list running applications, run browser actions through OpenClaw, explain what you're pointing at, apply a taught code fix, or click the control under your pointer."
         )
     }
 

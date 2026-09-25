@@ -12,31 +12,38 @@ struct DexterPermissionRow: View {
     let isGranted: Bool
     var grantAction: (() -> Void)?
 
+    @State private var isGrantHovered = false
+
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: isGranted ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(isGranted ? DS.Colors.success : DS.Colors.textTertiary)
-                .font(.system(size: 14))
+        HStack(spacing: DexterMetrics.space12) {
+            DexterStatusDot(tone: isGranted ? .success : .neutral)
 
             Text(title)
-                .font(DexterIdentity.Typography.body())
-                .foregroundColor(DS.Colors.textSecondary)
+                .font(DexterTypography.body())
+                .foregroundColor(DexterColors.textPrimary)
 
             Spacer()
 
             if isGranted {
-                Text("Granted")
-                    .font(DexterIdentity.Typography.monoCaption())
-                    .foregroundColor(DS.Colors.success)
+                Text("Ready")
+                    .font(DexterTypography.status())
+                    .foregroundColor(DexterColors.success)
             } else if let grantAction {
-                Button("Grant", action: grantAction)
-                    .font(DexterIdentity.Typography.monoCaption())
-                    .foregroundColor(DexterIdentity.accent)
+                Button("Allow", action: grantAction)
+                    .font(DexterTypography.caption())
+                    .foregroundColor(DexterPastelColors.lavender)
+                    .padding(.horizontal, DexterMetrics.space8)
+                    .padding(.vertical, DexterMetrics.space4)
+                    .background(
+                        RoundedRectangle(cornerRadius: DexterMetrics.radiusSmall, style: .continuous)
+                            .fill(isGrantHovered ? DexterPastelColors.lavender.opacity(0.14) : Color.clear)
+                    )
                     .buttonStyle(.plain)
+                    .onHover { isGrantHovered = $0 }
                     .pointerCursor()
             }
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, DexterMetrics.space8)
         .accessibilityElement(children: .combine)
     }
 }
@@ -63,7 +70,7 @@ struct DexterPermissionList: View {
                 title: "Accessibility",
                 isGranted: companionManager.hasAccessibilityPermission,
                 grantAction: {
-                    _ = companionManager.requestAccessibilityPermissionFromPanel()
+                    companionManager.requestAccessibilityPermissionFromPanel()
                 }
             )
 
@@ -71,7 +78,7 @@ struct DexterPermissionList: View {
                 title: "Screen Recording",
                 isGranted: companionManager.hasScreenRecordingPermission,
                 grantAction: {
-                    _ = companionManager.requestScreenRecordingPermissionFromPanel()
+                    companionManager.requestScreenRecordingPermissionFromPanel()
                 }
             )
 

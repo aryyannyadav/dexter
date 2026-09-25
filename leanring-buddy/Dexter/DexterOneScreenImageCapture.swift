@@ -24,7 +24,9 @@ struct DexterOneScreenImageCaptureResult: Equatable {
 enum DexterOneScreenImageCapture {
     static func captureOneScreenImage() async -> DexterOneScreenImageCaptureResult {
         let permissionGranted = CGPreflightScreenCaptureAccess()
-        print("[SCREEN-RAW] permission=\(permissionGranted)")
+        if DexterDeveloperModeSettings.isDeveloperModeEnabled {
+            print("[SCREEN-RAW] permission=\(permissionGranted)")
+        }
 
         guard permissionGranted else {
             return DexterOneScreenImageCaptureResult(
@@ -41,7 +43,9 @@ enum DexterOneScreenImageCapture {
         }
 
         do {
-            print("[SCREEN-RAW] capture started")
+            if DexterDeveloperModeSettings.isDeveloperModeEnabled {
+                print("[SCREEN-RAW] capture started")
+            }
             let captures = try await CompanionScreenCaptureUtility.captureCursorDisplayAsJPEG(
                 pointerLocationInScreenSpace: NSEvent.mouseLocation
             )
@@ -61,10 +65,12 @@ enum DexterOneScreenImageCapture {
             }
 
             let displayID = displayIDForFrame(capture.displayFrame)
-            print("[SCREEN-RAW] capture completed")
-            print("[SCREEN-RAW] dimensions=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels)")
-            print("[SCREEN-RAW] JPEG bytes=\(encodedJPEG.count)")
-            print("[SCREEN] display=\(displayID.map(String.init) ?? "unknown")")
+            if DexterDeveloperModeSettings.isDeveloperModeEnabled {
+                print("[SCREEN-RAW] capture completed")
+                print("[SCREEN-RAW] dimensions=\(capture.screenshotWidthInPixels)x\(capture.screenshotHeightInPixels)")
+                print("[SCREEN-RAW] JPEG bytes=\(encodedJPEG.count)")
+                print("[SCREEN] display=\(displayID.map(String.init) ?? "unknown")")
+            }
 
             return DexterOneScreenImageCaptureResult(
                 permissionGranted: true,
