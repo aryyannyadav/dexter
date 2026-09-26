@@ -14,10 +14,12 @@ enum DexterComputerControlAuthorizationScope {
         case .click:
             return true
         case .openURL, .navigate:
-            return action.parameters["browserAction"] != nil
+            if action.parameters["browserAction"] != nil { return true }
+            return action.parameters["uiDestination"]?.nonEmptyTrimmedValue != nil
+        case .typeText, .keyboardShortcut, .scroll:
+            return true
         case .inspectScreen, .explainContent, .listRunningApplications,
-             .typeText, .keyboardShortcut, .select, .scroll, .runTask,
-             .fileOperation, .terminalOperation:
+             .select, .runTask, .fileOperation, .terminalOperation:
             return false
         }
     }

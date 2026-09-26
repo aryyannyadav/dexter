@@ -6,8 +6,8 @@
 import Foundation
 
 enum DexterProfileWorkSuggestionEngine {
-    static let maxSuggestionsPerProfile = 1
-    static let maxHomeDashboardSuggestions = 3
+    /// Eligible pool per Dexter (display layer caps at 7).
+    static let maxSuggestionsPerProfile = 9
 
     static func generateSuggestions(
         input: DexterProfileWorkSuggestionEngineInput,
@@ -48,12 +48,25 @@ enum DexterProfileWorkSuggestionEngine {
                 candidates.append(engineMapped)
             }
 
-            let filtered = candidates
+            var eligible = candidates
                 .filter { persistence.shouldOfferSuggestion(identifier: $0.persistenceIdentifier, now: input.evaluatedAt) }
                 .sorted { $0.priority > $1.priority }
-                .prefix(maxSuggestionsPerProfile)
 
-            result[profile.id] = Array(filtered)
+            let existingHeadlines = Set(eligible.map(\.headline))
+            let starters = DexterPersonaStarterSuggestionCatalog.buildStarterSuggestions(
+                for: profile,
+                evaluatedAt: input.evaluatedAt,
+                persistence: persistence,
+                existingHeadlines: existingHeadlines,
+                maxCount: DexterPersonaStarterSuggestionCatalog.maxStartersPerProfile
+            )
+
+            for starter in starters where !eligible.contains(where: { $0.id == starter.id }) {
+                eligible.append(starter)
+            }
+
+            eligible.sort { $0.priority > $1.priority }
+            result[profile.id] = Array(eligible.prefix(maxSuggestionsPerProfile))
         }
 
         return result
@@ -62,11 +75,9 @@ enum DexterProfileWorkSuggestionEngine {
     static func homeDashboardSuggestions(
         from suggestionsByProfile: [UUID: [DexterProfileWorkSuggestion]]
     ) -> [DexterProfileWorkSuggestion] {
-        let flattened = suggestionsByProfile.values.flatMap { $0 }
-        return flattened
+        suggestionsByProfile.values
+            .flatMap { $0 }
             .sorted { $0.priority > $1.priority }
-            .prefix(maxHomeDashboardSuggestions)
-            .map { $0 }
     }
 
     private static func capabilityConnectSuggestion(

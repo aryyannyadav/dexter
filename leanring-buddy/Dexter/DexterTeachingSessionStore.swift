@@ -3,12 +3,13 @@
 //  leanring-buddy
 //
 
+import Combine
 import Foundation
 
 /// Session-scoped teaching progress (no screenshot bytes or screen inventory in memory).
 @MainActor
-final class DexterTeachingSessionStore {
-    private(set) var activeSession: DexterTeachingSession?
+final class DexterTeachingSessionStore: ObservableObject {
+    @Published private(set) var activeSession: DexterTeachingSession?
 
     func replaceSession(_ session: DexterTeachingSession?) {
         activeSession = session

@@ -6,6 +6,23 @@
 import Foundation
 
 enum DexterActionRecoveryIntentRecognizer {
+    static func recognizeRetry(fromUserMessage userMessage: String) -> Bool {
+        let normalized = userMessage.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let phrases = [
+            "retry the last computer action",
+            "retry last computer action",
+            "retry the last action",
+            "retry last action",
+            "please retry the last computer action",
+            "try again",
+            "try that again",
+            "do that again",
+            "retry the previous action",
+            "try the previous action again"
+        ]
+        return phrases.contains { normalized == $0 || normalized.contains($0) }
+    }
+
     static func recognizeUndo(fromUserMessage userMessage: String) -> Bool {
         let normalized = userMessage.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         let phrases = [

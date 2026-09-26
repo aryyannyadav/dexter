@@ -41,6 +41,9 @@ final class OllamaVisionProvider: VisionProvider {
         if request.wantsStructuredObservations {
             systemPrompt += "\n\n" + DexterVisionSystemPrompt.structuredObservationsInstruction
         }
+        if let systemPromptSupplement = request.systemPromptSupplement, !systemPromptSupplement.isEmpty {
+            systemPrompt += "\n\n" + systemPromptSupplement
+        }
 
         var userContent = request.userQuestion
         if let pointerContextSummary = request.pointerContextSummary, !pointerContextSummary.isEmpty {

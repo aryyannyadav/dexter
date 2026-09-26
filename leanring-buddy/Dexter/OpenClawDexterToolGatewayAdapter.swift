@@ -89,8 +89,32 @@ final class OpenClawDexterToolGatewayAdapter: DexterToolGateway {
             return .unavailable(lifecycleUnavailableReason)
         }
 
+        let preparedToolInvocation: DexterToolInvocation
+        do {
+            preparedToolInvocation = try await OpenClawComputerActToolInvocationPreparer.prepareIfNeeded(
+                toolInvocation: enrichedToolInvocation,
+                nodeSnapshot: nodeSnapshot,
+                executionIdentifier: executionIdentifier,
+                nodeInvokeClient: nodeInvokeClient
+            )
+        } catch let preparationError as OpenClawComputerActPreparationError {
+            currentExecutionStatus = .failed
+            return .dispatchFailed(message: preparationError.localizedDescription, rawOutput: nil)
+        } catch {
+            currentExecutionStatus = .failed
+            return .dispatchFailed(message: error.localizedDescription, rawOutput: nil)
+        }
+
+        if let pointerUnavailableReason = DexterOpenClawComputerUsePointerCapabilities.unavailableReason(
+            toolKind: preparedToolInvocation.toolKind,
+            parameters: preparedToolInvocation.parameters,
+            computerUseDescriptor: computerUseDescriptor
+        ) {
+            return .unavailable(pointerUnavailableReason)
+        }
+
         guard let invokePlan = OpenClawDexterToolInvokePlanner.plan(
-            toolInvocation: enrichedToolInvocation,
+            toolInvocation: preparedToolInvocation,
             executionIdentifier: executionIdentifier,
             computerUseDescriptor: computerUseDescriptor,
             advertisedCommands: nodeSnapshot.advertisedCommands

@@ -25,10 +25,21 @@ final class DexterAgentSettingsStore: ObservableObject {
     private let speakLifecycleKey = "dexterAgentsSpeakLifecycle"
     private let showBesideCursorKey = "dexterAgentsShowBesideCursor"
     private let suggestTasksKey = "dexterAgentsSuggestTasks"
+    private let suggestTasksLegacyDefaultMigrationKey = "dexterAgentsSuggestTasksLegacyDefaultMigrationV1"
 
     private init() {
         speakWhenAgentStartsOrFinishes = UserDefaults.standard.bool(forKey: speakLifecycleKey)
         showUpdatesBesideCursor = UserDefaults.standard.bool(forKey: showBesideCursorKey)
-        suggestAgentTasks = UserDefaults.standard.bool(forKey: suggestTasksKey)
+        if UserDefaults.standard.object(forKey: suggestTasksKey) == nil {
+            suggestAgentTasks = true
+            UserDefaults.standard.set(true, forKey: suggestTasksKey)
+        } else if !UserDefaults.standard.bool(forKey: suggestTasksLegacyDefaultMigrationKey) {
+            // Earlier builds defaulted to `false` when the key was unset; suggestions were effectively off.
+            suggestAgentTasks = true
+            UserDefaults.standard.set(true, forKey: suggestTasksKey)
+            UserDefaults.standard.set(true, forKey: suggestTasksLegacyDefaultMigrationKey)
+        } else {
+            suggestAgentTasks = UserDefaults.standard.bool(forKey: suggestTasksKey)
+        }
     }
 }

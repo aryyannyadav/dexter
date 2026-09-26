@@ -352,13 +352,14 @@ struct DexterHomeChatPane: View {
             )
         } else if let profile = resolvedConversationProfile {
             DexterConversationEmptyState(
+                companionManager: companionManager,
                 profile: profile,
                 highlightedFirstRunPrompt: companionManager.pendingOnboardingFirstSuggestionPrompt
-            ) { prompt in
-                stickToBottom = true
-                companionManager.pendingOnboardingFirstSuggestionPrompt = nil
-                companionManager.pendingOnboardingComposerPlaceholder = nil
-                companionManager.submitTextMessageToDexter(prompt)
+            )
+            .onChange(of: companionManager.dexterChatMessages.count) { _, _ in
+                if !companionManager.dexterChatMessages.isEmpty {
+                    stickToBottom = true
+                }
             }
         }
     }

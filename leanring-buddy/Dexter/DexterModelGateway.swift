@@ -19,6 +19,10 @@ final class DexterModelGateway: ModelProvider {
     private(set) var lastRouteReason: String?
     private(set) var preferredCloudModelIdentifier: String
 
+    var uiTargetVisionProvider: VisionProvider {
+        ollamaProvider.uiTargetVisionProvider
+    }
+
     var modelIdentifier: String {
         if let lastRoutedBackend {
             switch lastRoutedBackend {

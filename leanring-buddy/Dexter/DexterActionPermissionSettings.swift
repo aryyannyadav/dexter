@@ -14,7 +14,7 @@ struct DexterActionPermissionSettings: Equatable {
 
 protocol DexterActionPermissionSettingsStore: AnyObject {
     var currentSettings: DexterActionPermissionSettings { get set }
-    /// Session-only: user approved computer control once; cleared on app quit (not persisted).
+    /// Dexter user authorization for ordinary computer control (persisted via `DexterComputerControlAuthorization`).
     var isComputerControlAuthorizedForSession: Bool { get set }
 }
 
@@ -30,10 +30,24 @@ final class InMemoryDexterActionPermissionSettingsStore: DexterActionPermissionS
 final class UserDefaultsDexterActionPermissionSettingsStore: DexterActionPermissionSettingsStore {
     private let userDefaults: UserDefaults
     private let autoApproveLowRiskActionsKey = "dexter.actionPermission.autoApproveLowRiskActions"
-    var isComputerControlAuthorizedForSession: Bool = false
+    private var ephemeralComputerControlAuthorization = false
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
+        ephemeralComputerControlAuthorization = userDefaults.bool(
+            forKey: DexterComputerControlAuthorization.persistedUserAuthorizationKey
+        )
+    }
+
+    var isComputerControlAuthorizedForSession: Bool {
+        get {
+            ephemeralComputerControlAuthorization
+                || userDefaults.bool(forKey: DexterComputerControlAuthorization.persistedUserAuthorizationKey)
+        }
+        set {
+            ephemeralComputerControlAuthorization = newValue
+            userDefaults.set(newValue, forKey: DexterComputerControlAuthorization.persistedUserAuthorizationKey)
+        }
     }
 
     var currentSettings: DexterActionPermissionSettings {

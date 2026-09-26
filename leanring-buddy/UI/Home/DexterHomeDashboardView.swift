@@ -10,28 +10,25 @@ struct DexterHomeDashboardView: View {
     @ObservedObject var companionManager: CompanionManager
     var onOpenProfile: ((UUID) -> Void)?
 
-    private let stageMaxWidth: CGFloat = 640
+    private let stageMaxWidth: CGFloat = min(680, DexterConversationLayout.chatColumnMaxWidth)
 
     var body: some View {
         ScrollView {
             VStack(spacing: DexterSpacing.xxl) {
-                companionStage
+                greetingSection
                     .dexterHomeStaggeredEntrance(index: 0)
 
-                greetingSection
+                companionStatusLine
                     .dexterHomeStaggeredEntrance(index: 1)
 
-                companionStatusLine
+                suggestionsBlock
                     .dexterHomeStaggeredEntrance(index: 2)
 
-                suggestionsBlock
+                recentActivityBlock
                     .dexterHomeStaggeredEntrance(index: 3)
 
-                recentActivityBlock
-                    .dexterHomeStaggeredEntrance(index: 4)
-
                 myDextersBlock
-                    .dexterHomeStaggeredEntrance(index: 5)
+                    .dexterHomeStaggeredEntrance(index: 4)
             }
             .padding(.horizontal, DexterSpacing.xl)
             .padding(.top, DexterSpacing.xxl)
@@ -55,22 +52,8 @@ struct DexterHomeDashboardView: View {
         .frame(maxWidth: .infinity)
     }
 
-    @ViewBuilder
-    private var companionStage: some View {
-        if let profile = heroProfile {
-            DexterCharacterStagePortrait(
-                profile: profile,
-                characterState: companionManager.activeCharacterState,
-                height: 280,
-                animationEnabled: true
-            )
-            .transition(.scale.combined(with: .opacity))
-            .animation(DexterAnimation.standardSpring, value: profile.id)
-        }
-    }
-
     private var companionStatusLine: some View {
-        let suggestions = companionManager.dexterSuggestionStore.presentationState.homeSuggestions
+        let suggestions = companionManager.dexterSuggestionStore.presentationState.aggregatedSuggestions
         return Group {
             if suggestions.isEmpty {
                 Text("Nothing to suggest right now.")
@@ -91,8 +74,9 @@ struct DexterHomeDashboardView: View {
         DexterHomeSuggestionsSection(
             companionManager: companionManager,
             sectionTitle: "Suggested for you",
-            showsEmptyStateWhenNoSuggestions: false,
-            layout: .centerStage
+            showsEmptyStateWhenNoSuggestions: true,
+            layout: .centerStage,
+            scope: .allDexters
         )
     }
 
@@ -138,15 +122,10 @@ struct DexterHomeDashboardView: View {
                             }
                         }
                     )
-                    .dexterHomeStaggeredEntrance(index: 6 + index)
+                    .dexterHomeStaggeredEntrance(index: 5 + index)
                 }
             }
         }
-    }
-
-    private var heroProfile: DexterProfile? {
-        companionManager.dexterProfileStore.activeProfile
-            ?? companionManager.dexterProfileStore.profiles.first
     }
 
     private func recentActivityLine(for profile: DexterProfile) -> String? {

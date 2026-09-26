@@ -52,6 +52,22 @@ enum DexterObservabilityLog {
         printLine(category: "OBSERVE", message: message)
     }
 
+    static func computer(_ message: String) {
+        printLine(category: "COMPUTER", message: message)
+    }
+
+    static func target(_ message: String) {
+        printLine(category: "TARGET", message: message)
+    }
+
+    static func retry(_ message: String) {
+        printLine(category: "RETRY", message: message)
+    }
+
+    static func error(_ message: String) {
+        printLine(category: "ERROR", message: message)
+    }
+
     static func verify(_ message: String) {
         printLine(category: "VERIFY", message: message)
     }

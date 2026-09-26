@@ -30,6 +30,8 @@ struct DexterContextAssemblyRequest: Equatable {
     let performanceProfile: DexterContextPerformanceProfile
     let activeDexterProfileId: UUID?
     let activeFileWorkspaceId: UUID?
+    /// In-app UI navigation / target resolution needs active app, window, and screen observation.
+    let requiresComputerUIObservation: Bool
 
     init(
         userMessage: String,
@@ -40,7 +42,8 @@ struct DexterContextAssemblyRequest: Equatable {
         pointerLocationInScreenSpaceOverride: CGPoint? = nil,
         performanceProfile: DexterContextPerformanceProfile = .standard,
         activeDexterProfileId: UUID? = nil,
-        activeFileWorkspaceId: UUID? = nil
+        activeFileWorkspaceId: UUID? = nil,
+        requiresComputerUIObservation: Bool = false
     ) {
         self.userMessage = userMessage
         self.screenCaptureMode = screenCaptureMode
@@ -51,6 +54,7 @@ struct DexterContextAssemblyRequest: Equatable {
         self.performanceProfile = performanceProfile
         self.activeDexterProfileId = activeDexterProfileId
         self.activeFileWorkspaceId = activeFileWorkspaceId
+        self.requiresComputerUIObservation = requiresComputerUIObservation
     }
 }
 

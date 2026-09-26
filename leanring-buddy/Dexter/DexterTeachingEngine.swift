@@ -286,11 +286,16 @@ enum DexterTeachingEngine {
             || normalizedMessage.contains("explain like i'm five") {
             return .eli5
         }
-        if normalizedMessage.contains("beginner") || normalizedMessage.contains("i'm new") || normalizedMessage.contains("im new") {
+        if normalizedMessage.contains("beginner") || normalizedMessage.contains("i'm new") || normalizedMessage.contains("im new")
+            || normalizedMessage.contains("simple explanation") {
             return .beginner
         }
-        if normalizedMessage.contains("expert") || normalizedMessage.contains("advanced") || normalizedMessage.contains("in depth") {
+        if normalizedMessage.contains("expert") || normalizedMessage.contains("advanced") || normalizedMessage.contains("in depth")
+            || normalizedMessage.contains("technical") {
             return .expert
+        }
+        if let hubPreferredStyle = DexterHubTeachingStylePreferenceStore.preferredTeachingStyle() {
+            return hubPreferredStyle
         }
         return .standard
     }

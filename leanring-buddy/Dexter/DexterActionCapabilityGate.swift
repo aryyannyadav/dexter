@@ -13,6 +13,9 @@ enum DexterActionCapabilityGate {
         case .click, .typeText, .scroll, .keyboardShortcut:
             return [DexterActionRequirement(capabilityID: .computerPointer, integrationID: nil)]
         case .openURL, .navigate, .select:
+            if action.parameters["uiDestination"]?.nonEmptyTrimmedValue != nil {
+                return [DexterActionRequirement(capabilityID: .computerPointer, integrationID: nil)]
+            }
             return [DexterActionRequirement(capabilityID: .browserNavigation, integrationID: nil)]
         case .fileOperation:
             return [DexterActionRequirement(capabilityID: .filesLocal, integrationID: nil)]
@@ -42,7 +45,7 @@ enum DexterActionCapabilityGate {
                 continue
             case .requiresConnection:
                 return .blocked(
-                    userMessage: "\(capability.displayName) isn't connected right now. Open Dexter Settings → Capabilities to reconnect Dexter's computer runtime."
+                    userMessage: "OpenClaw computer control isn't available right now. Open Settings → Computer Control to reconnect your Mac node."
                 )
             case .requiresPermission:
                 return .blocked(

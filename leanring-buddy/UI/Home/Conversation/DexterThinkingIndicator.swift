@@ -10,11 +10,11 @@ struct DexterConversationThinkingIndicator: View {
     var characterState: DexterCharacterState = .thinking
 
     var body: some View {
-        HStack(alignment: .center, spacing: DexterMessageMetrics.avatarToBubbleGap) {
-            DexterAvatar(
+        HStack(alignment: .top, spacing: DexterMessageMetrics.avatarToBubbleGap) {
+            DexterCharacterImage(
                 profile: profile,
-                size: DexterAvatarSize.md,
                 characterState: characterState,
+                size: DexterAvatarSize.md,
                 animationEnabled: true
             )
 

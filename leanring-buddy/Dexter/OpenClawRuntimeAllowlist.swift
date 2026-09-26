@@ -34,6 +34,13 @@ enum OpenClawRuntimeAllowlist {
                 computerUseDescriptor: nodeSnapshot.computerUseDescriptor
             )
         }
+        if DexterOpenClawComputerUsePointerCapabilities.requiredComputerUseAction(for: toolInvocation.toolKind) != nil {
+            return DexterOpenClawComputerUsePointerCapabilities.supportsToolExecution(
+                toolKind: toolInvocation.toolKind,
+                parameters: toolInvocation.parameters,
+                computerUseDescriptor: nodeSnapshot.computerUseDescriptor
+            )
+        }
         return true
     }
 

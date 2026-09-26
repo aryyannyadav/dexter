@@ -40,6 +40,8 @@ struct DexterCharacterView: View {
     var state: DexterCharacterState = .idle
     var size: DexterCharacterSize = .medium
     var presentationMode: DexterCharacterPresentationMode = .avatar
+    /// Fills compact containers without changing the outer layout frame (PNG margin compensation).
+    var artworkMagnification: CGFloat = 1.0
     var animationEnabled: Bool = false
     var profileNameForAccessibility: String?
 
@@ -90,6 +92,7 @@ struct DexterCharacterView: View {
 
             characterArtwork
                 .padding(artworkPadding(for: dimension))
+                .scaleEffect(artworkMagnification)
                 .scaleEffect(y: blinkScale)
         }
         .frame(width: dimension, height: dimension)
@@ -141,14 +144,14 @@ struct DexterCharacterView: View {
     private func artworkPadding(for dimension: CGFloat) -> CGFloat {
         if usesStateSheetArtwork {
             switch presentationMode {
-            case .stage: return dimension * 0.01
+            case .stage: return dimension * 0.005
             case .avatar: return dimension * 0.04
             case .full: return dimension * 0.03
             }
         }
         switch presentationMode {
         case .avatar: return dimension * 0.1
-        case .stage: return dimension * 0.02
+        case .stage: return dimension * 0.005
         case .full: return dimension * 0.06
         }
     }

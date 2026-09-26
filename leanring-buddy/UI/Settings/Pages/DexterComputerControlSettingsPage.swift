@@ -34,7 +34,12 @@ struct DexterComputerControlSettingsPage: View {
                 DexterSettingsInfoRow(title: "Computer control", value: computerControlAvailabilityLabel)
                 DexterSettingsDivider()
                 DexterSettingsInfoRow(
-                    title: "Computer runtime",
+                    title: "Dexter authorization",
+                    value: companionManager.computerControlAuthorizationStatusLabel
+                )
+                DexterSettingsDivider()
+                DexterSettingsInfoRow(
+                    title: "OpenClaw",
                     value: companionManager.openClawGatewayHealthMonitor.connectionState.isConnected
                         ? "Connected"
                         : "Disconnected"
@@ -50,6 +55,9 @@ struct DexterComputerControlSettingsPage: View {
                         set: { newValue in
                             isComputerControlEnabled = newValue
                             DexterObserveOnlyPolicy.setAutonomousComputerControlEnabled(newValue)
+                            if !newValue {
+                                companionManager.revokeComputerControlUserAuthorization()
+                            }
                         }
                     )
                 )

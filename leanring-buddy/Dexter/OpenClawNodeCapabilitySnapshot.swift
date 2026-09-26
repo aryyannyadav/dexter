@@ -38,13 +38,22 @@ struct OpenClawNodeComputerUseDescriptorSnapshot: Equatable {
     /// Actions Dexter maps through `OpenClawDexterToolInvokePlanner` (tests + permissive fallback when descriptor is absent).
     static let dexterMappedComputerUseActions: [String] = [
         "list_apps",
+        "list_windows",
+        "get_window_state",
+        "get_accessibility_tree",
+        "get_cursor_position",
         "launch_app",
         "kill_app",
         "bring_to_front",
         "left_click",
+        "right_click",
+        "double_click",
+        "mouse_move",
+        "left_click_drag",
         "type",
         "key",
-        "scroll"
+        "scroll",
+        "wait"
     ]
 }
 

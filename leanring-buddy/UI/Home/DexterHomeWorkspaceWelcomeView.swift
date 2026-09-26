@@ -33,22 +33,17 @@ struct DexterHomeWorkspaceWelcomeView: View {
                 }
             )
 
-            DexterHomeDexterCardView(
-                profile: profile,
-                recentActivityLine: nil,
-                workSuggestion: nil,
-                onOpen: {},
-                onOpenProfile: onOpenProfile.map { handler in { handler(profile.id) } }
-            )
-            .allowsHitTesting(false)
+            DexterDexterPersonaHeader(profile: profile, characterState: .idle)
 
             DexterHomeSuggestionsSection(
                 companionManager: companionManager,
+                sectionTitle: "Suggested for you",
                 showsEmptyStateWhenNoSuggestions: true,
-                layout: .centerStage
+                layout: .centerStage,
+                scope: .dexterProfile(profile.id)
             )
         }
-        .frame(maxWidth: 640)
+        .frame(maxWidth: min(680, DexterConversationLayout.chatColumnMaxWidth))
         .frame(maxWidth: .infinity)
         .padding(.horizontal, DexterSpacing.xl)
     }

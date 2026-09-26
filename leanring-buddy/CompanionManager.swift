@@ -105,6 +105,7 @@ final class CompanionManager: ObservableObject {
         DexterWorkerProxyClient.workerBaseURL
     }
 
+    private let dexterHubEventBridge = DexterHubEventBridge()
     let dexterRuntimeUIStateStore = DexterRuntimeUIStateStore()
     let dexterAvatarPresence = DexterAvatarPresenceModel()
 
@@ -369,6 +370,18 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    var computerControlAuthorizationStatusLabel: String {
+        DexterComputerControlAuthorization.authorizationStatusLabel(
+            store: dexterOrchestrator.actionPermissionSettingsStore
+        )
+    }
+
+    func revokeComputerControlUserAuthorization() {
+        DexterComputerControlAuthorization.revokeUserAuthorization(
+            store: dexterOrchestrator.actionPermissionSettingsStore
+        )
+    }
+
     func refreshDexterIntegrations() {
         let integrationContext = DexterIntegrationContext(
             activeApplicationName: lastDexterContextSnapshot?.activeApplicationName,
@@ -389,7 +402,10 @@ final class CompanionManager: ObservableObject {
             hasScreenRecordingPermission: hasScreenRecordingPermission,
             hasMicrophonePermission: hasMicrophonePermission,
             hasScreenContentPermission: hasScreenContentPermission,
-            integrations: dexterIntegrationService.integrations
+            integrations: dexterIntegrationService.integrations,
+            isDexterComputerControlUserAuthorized: DexterComputerControlAuthorization.isUserAuthorized(
+                store: dexterOrchestrator.actionPermissionSettingsStore
+            )
         )
         dexterProductCapabilities = DexterProductCapabilityRegistry.buildCapabilities(input: input)
     }
@@ -1052,12 +1068,12 @@ final class CompanionManager: ObservableObject {
     }
 
     func approveAgentPermissionFromHUD(allowAlwaysForLowRisk: Bool) {
-        if allowAlwaysForLowRisk,
-           let confirmation = actionConfirmationPresentation,
-           confirmation.riskLevel == .lowRisk {
+        if allowAlwaysForLowRisk {
             autoApproveLowRiskActions = true
-            dexterOrchestrator.actionPermissionSettingsStore.isComputerControlAuthorizedForSession = true
         }
+        DexterComputerControlAuthorization.grantUserAuthorization(
+            store: dexterOrchestrator.actionPermissionSettingsStore
+        )
         approvePendingActionConfirmation()
     }
 
@@ -1115,6 +1131,7 @@ final class CompanionManager: ObservableObject {
         dexterDemonstrationPhaseStore.transition(to: .acting, detail: "Running approved action")
         let outcome = await dexterOrchestrator.approvePendingActionConfirmation()
         refreshActionConfirmationPresentation()
+        refreshDexterProductCapabilities()
         guard let outcome else { return nil }
         panelLastActionSummary = outcome.verificationReport?.summary ?? outcome.spokenSummary
         dexterVoiceCoordinator.recordAssistantResponse(outcome.spokenSummary)
@@ -1264,6 +1281,35 @@ final class CompanionManager: ObservableObject {
         bindShortcutTransitions()
         bindPointInvokeShortcut()
         bindAgentLifecycleAnnouncements()
+        dexterHubEventBridge.install(
+            runtimeUIStateStore: dexterRuntimeUIStateStore,
+            pendingConfirmationProvider: { [weak self] in
+                self?.dexterOrchestrator.actionConfirmationPresentation()
+            },
+            accessibilityPermissionProvider: { [weak self] in
+                self?.hasAccessibilityPermission ?? false
+            },
+            memoryStoreProvider: { [unowned self] in self.dexterOrchestrator.memoryStore },
+            actionHistoryProvider: { [unowned self] in self.dexterOrchestrator.actionHistoryStore },
+            proactiveAutomationSettingsProvider: { [unowned self] in
+                self.dexterOrchestrator.proactiveAutomationSettingsStore
+            },
+            demoHealthSnapshotProvider: { [weak self] in
+                guard let self else { return [] }
+                let speechToTextReadiness = self.buddyDictationManager.speechToTextReadiness
+                return await DexterHubDemoHealthCollector.collectSnapshot(
+                    isHubWebSocketServerRunning: true,
+                    hasPersistedScreenContentGrant: self.hasScreenContentPermission,
+                    ollamaConnectionStatus: self.ollamaAIProvider.connectionStatus,
+                    isOllamaProviderEnabled: DexterOllamaSettingsStore.shared.isOllamaProviderEnabled,
+                    transcriptionProviderIsConfigured: speechToTextReadiness.isReady
+                )
+            },
+            pointInvokeSessionPublisher: $activePointInvokeSession.eraseToAnyPublisher(),
+            voiceInteractionStatePublisher: dexterVoiceCoordinator.$interactionState.eraseToAnyPublisher(),
+            streamingResponseTextPublisher: dexterVoiceCoordinator.$streamingResponseText.eraseToAnyPublisher(),
+            teachingSessionPublisher: dexterOrchestrator.teachingSessionStore.$activeSession.eraseToAnyPublisher()
+        )
         globalHomeShortcutMonitor.start()
         dexterOrchestrator.setModelIdentifier(selectedModel)
         loadDexterRecentConversationsFromDisk()

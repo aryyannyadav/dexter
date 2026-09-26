@@ -38,6 +38,26 @@ struct DexterVisionRequest: Equatable {
     let imageLabel: String
     let pointerContextSummary: String?
     let wantsStructuredObservations: Bool
+    /// When set, appended to the default vision system prompt (e.g. UI target localization JSON).
+    let systemPromptSupplement: String?
+
+    init(
+        userQuestion: String,
+        scope: DexterVisionImageScope,
+        jpegImageData: Data,
+        imageLabel: String,
+        pointerContextSummary: String? = nil,
+        wantsStructuredObservations: Bool = false,
+        systemPromptSupplement: String? = nil
+    ) {
+        self.userQuestion = userQuestion
+        self.scope = scope
+        self.jpegImageData = jpegImageData
+        self.imageLabel = imageLabel
+        self.pointerContextSummary = pointerContextSummary
+        self.wantsStructuredObservations = wantsStructuredObservations
+        self.systemPromptSupplement = systemPromptSupplement
+    }
 }
 
 struct DexterVisionResponse: Equatable {

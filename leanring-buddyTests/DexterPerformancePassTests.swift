@@ -60,6 +60,22 @@ struct DexterPerformancePassTests {
         let deicticRoute = DexterFastRequestRouter.route(userMessage: "what is this button?")
         #expect(deicticRoute.route == .screenContext)
         #expect(deicticRoute.requiresScreenCapture)
+
+        let fixThisRoute = DexterFastRequestRouter.route(userMessage: "fix this")
+        #expect(fixThisRoute.route == .screenContext)
+
+        let explainThisRoute = DexterFastRequestRouter.route(userMessage: "explain this")
+        #expect(explainThisRoute.route == .screenContext)
+
+        let nextStepRoute = DexterFastRequestRouter.route(userMessage: "what should i do next")
+        #expect(nextStepRoute.route == .screenContext)
+
+        let pointInvokeRoute = DexterFastRequestRouter.route(
+            userMessage: "hey",
+            forcePointInvokeScreenRoute: true
+        )
+        #expect(pointInvokeRoute.route == .screenContext)
+        #expect(pointInvokeRoute.pinPointerForContext)
     }
 
     @Test func fastRequestRouterUsesComputerActionWithoutScreenCapture() {

@@ -5,7 +5,7 @@
 
 import SwiftUI
 
-/// Compact profile avatar — renders through `DexterCharacterView` (phase 4).
+/// Compact profile avatar — transparent `DexterCharacterImage` (no tile).
 struct DexterAvatar: View {
     enum VisualState: Equatable {
         case normal
@@ -23,25 +23,14 @@ struct DexterAvatar: View {
 
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            if let definition = resolvedCharacterDefinition {
-                DexterCharacterView(
-                    definition: definition,
-                    appearance: profile.characterAppearance,
-                    state: characterState,
-                    size: .custom(size),
-                    presentationMode: DexterCharacterAssetCatalog.presentationModeForCompactSurfaces(state: characterState),
-                    animationEnabled: animationEnabled,
-                    profileNameForAccessibility: animationEnabled ? profile.name : nil
-                )
-                .opacity(visualState == .muted ? 0.55 : 1)
-                .scaleEffect(visualState == .highlighted ? 1.04 : 1)
-                .overlay {
-                    if visualState == .highlighted {
-                        Circle()
-                            .stroke(profile.accentColor.opacity(0.65), lineWidth: 2)
-                    }
-                }
-            }
+            DexterCharacterImage(
+                profile: profile,
+                characterState: characterState,
+                size: size,
+                animationEnabled: animationEnabled,
+                isHovered: visualState == .highlighted
+            )
+            .opacity(visualState == .muted ? 0.55 : 1)
 
             if showStatus {
                 DexterStatusDot(tone: statusTone, showsSoftGlow: false)
@@ -51,13 +40,5 @@ struct DexterAvatar: View {
         .frame(width: size, height: size)
         .accessibilityHidden(!animationEnabled)
         .accessibilityLabel("\(profile.name), \(characterState.accessibilityLabel)")
-    }
-
-    private var resolvedCharacterDefinition: DexterCharacterDefinition? {
-        if let definition = DexterCharacterCatalog.character(withID: profile.characterAppearance.characterID) {
-            return definition
-        }
-        let fallbackID = DexterCharacterCatalog.defaultCharacterID(forProfileID: profile.id)
-        return DexterCharacterCatalog.character(withID: fallbackID)
     }
 }

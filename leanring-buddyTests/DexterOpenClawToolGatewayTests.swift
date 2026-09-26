@@ -26,6 +26,8 @@ final class MockOpenClawNodeInvokeClient: OpenClawNodeInvoking {
     var invokedParametersJSON: String?
     var allInvokedParametersJSON: [String] = []
     var nextResult: OpenClawNodeInvokeResult = OpenClawNodeInvokeResult(ok: true, errorMessage: nil, combinedOutput: "")
+    var resultsByCallIndex: [OpenClawNodeInvokeResult] = []
+    var invokedCommands: [String] = []
     var shouldThrowCancellation = false
 
     func invoke(
@@ -37,9 +39,16 @@ final class MockOpenClawNodeInvokeClient: OpenClawNodeInvoking {
         invokedNodeIdentifier = nodeIdentifier
         invokedCommand = command
         invokedParametersJSON = parametersJSON
+        invokedCommands.append(command)
         allInvokedParametersJSON.append(parametersJSON)
         if shouldThrowCancellation {
             throw CancellationError()
+        }
+        if !resultsByCallIndex.isEmpty {
+            let callIndex = invokedCommands.count - 1
+            if callIndex < resultsByCallIndex.count {
+                return resultsByCallIndex[callIndex]
+            }
         }
         return nextResult
     }
@@ -251,6 +260,60 @@ struct DexterOpenClawToolGatewayTests {
             Issue.record("Expected cancelled outcome.")
             return
         }
+    }
+
+    @Test @MainActor func gatewayCapturesScreenSnapshotBeforeCoordinateClick() async {
+        let healthMonitor = StubOpenClawHealthMonitor()
+        healthMonitor.connectionState = .connected
+        healthMonitor.preferredNodeSnapshot = Self.connectedNodeSnapshot
+
+        let invokeClient = MockOpenClawNodeInvokeClient()
+        invokeClient.resultsByCallIndex = [
+            OpenClawNodeInvokeResult(
+                ok: true,
+                errorMessage: nil,
+                combinedOutput: #"{"displayFrameId":"frame-1","width":1440}"#
+            ),
+            OpenClawNodeInvokeResult(ok: true, errorMessage: nil, combinedOutput: "")
+        ]
+
+        let gateway = Self.makeGateway(healthMonitor: healthMonitor, invokeClient: invokeClient)
+
+        let outcome = await gateway.execute(
+            toolInvocation: DexterToolInvocation(
+                toolKind: .click,
+                actionIdentifier: DexterActionType.click.rawValue,
+                parameters: ["x": "10", "y": "20"]
+            )
+        )
+
+        guard case .dispatchSucceeded = outcome else {
+            Issue.record("Expected dispatch success after screen snapshot.")
+            return
+        }
+        #expect(invokeClient.invokedCommands.first == "screen.snapshot")
+        #expect(invokeClient.invokedCommands.contains("computer.act"))
+        #expect(invokeClient.allInvokedParametersJSON.contains(where: { $0.contains("displayFrameId") }))
+    }
+
+    @Test func invokePlannerMapsRightClickWhenAdvertised() {
+        let descriptor = OpenClawNodeComputerUseDescriptorSnapshot(
+            providerIdentifier: "peekaboo",
+            providerLabel: "Peekaboo",
+            contractVersion: 2,
+            advertisedActions: OpenClawNodeComputerUseDescriptorSnapshot.dexterMappedComputerUseActions
+        )
+        let plan = OpenClawDexterToolInvokePlanner.plan(
+            toolInvocation: DexterToolInvocation(
+                toolKind: .click,
+                actionIdentifier: DexterActionType.click.rawValue,
+                parameters: ["x": "1", "y": "2", "clickKind": "right"]
+            ),
+            executionIdentifier: "a1b2c3d4-e5f6-4789-abcd-ef0123456789",
+            computerUseDescriptor: descriptor,
+            advertisedCommands: Self.connectedNodeSnapshot.advertisedCommands
+        )
+        #expect(plan?.parametersJSON.contains("right_click") == true)
     }
 
     @Test func toolMapperBuildsGenericApplicationLifecyclePlans() {

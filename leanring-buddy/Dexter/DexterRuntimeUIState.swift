@@ -226,6 +226,10 @@ final class DexterRuntimeUIStateStore: ObservableObject {
         set { activeExecutionSnapshot = newValue }
     }
     private var voiceInteractionState: DexterVoiceInteractionState = .idle
+
+    var currentVoiceInteractionState: DexterVoiceInteractionState {
+        voiceInteractionState
+    }
     private var orchestratorPhaseOverride: DexterRuntimeUIState?
     private var orchestratorDetailOverride: String = ""
 

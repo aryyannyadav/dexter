@@ -73,7 +73,10 @@ enum OpenClawDexterToolInvokePlanner {
                   let yText = toolInvocation.parameters["y"],
                   let xCoordinate = Double(xText),
                   let yCoordinate = Double(yText) else { return nil }
-            guard computerUseDescriptor.advertisesComputerUseAction("left_click") else { return nil }
+            let clickAction = DexterOpenClawComputerUsePointerCapabilities.resolvedClickAction(
+                from: toolInvocation.parameters
+            )
+            guard computerUseDescriptor.advertisesComputerUseAction(clickAction.rawValue) else { return nil }
             var fields: [String: OpenClawComputerActJSONValue] = [
                 "x": .double(xCoordinate),
                 "y": .double(yCoordinate)
@@ -84,13 +87,20 @@ enum OpenClawDexterToolInvokePlanner {
             if let observationId = toolInvocation.parameters["observationId"] {
                 fields["observationId"] = .string(observationId)
             }
+            if let refWidthText = toolInvocation.parameters["refWidth"],
+               let refWidth = Int(refWidthText) {
+                fields["refWidth"] = .int(refWidth)
+            }
+            if let elementRef = toolInvocation.parameters["elementRef"]?.nonEmptyTrimmedValue {
+                fields["elementRef"] = .string(elementRef)
+            }
             if let screenIndexText = toolInvocation.parameters["screenIndex"],
                let screenIndex = Int(screenIndexText) {
                 fields["screenIndex"] = .int(screenIndex)
             }
             return computerActPlan(
                 executionIdentifier: executionIdentifier,
-                actionName: "left_click",
+                actionName: clickAction.rawValue,
                 fields: fields
             )
         case .typeText:

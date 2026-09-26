@@ -98,6 +98,22 @@ extension PermissionManager {
                     requiresScreenRecordingPermission: false
                 )
             }
+            if action.parameters["uiDestination"]?.nonEmptyTrimmedValue != nil {
+                if !snapshot.hasAccessibilityPermission {
+                    return DexterActionPermissionDecision(
+                        isAllowed: false,
+                        message: "Accessibility permission is required before Dexter can open items in the application UI.",
+                        requiresAccessibilityPermission: true,
+                        requiresScreenRecordingPermission: false
+                    )
+                }
+                return DexterActionPermissionDecision(
+                    isAllowed: true,
+                    message: "Dexter approved opening a UI destination in the application.",
+                    requiresAccessibilityPermission: true,
+                    requiresScreenRecordingPermission: false
+                )
+            }
             return DexterActionPermissionDecision(
                 isAllowed: false,
                 message: "Opening URLs and navigation actions are not enabled in Dexter yet.",
@@ -140,11 +156,13 @@ extension PermissionManager {
             }
             let xCoordinate = action.parameters["x"] ?? ""
             let yCoordinate = action.parameters["y"] ?? ""
-            guard Double(xCoordinate) != nil, Double(yCoordinate) != nil else {
+            let hasScreenCoordinates = Double(xCoordinate) != nil && Double(yCoordinate) != nil
+            let hasSemanticElementReference = action.parameters["elementRef"]?.nonEmptyTrimmedValue != nil
+            guard hasScreenCoordinates || hasSemanticElementReference else {
                 return DexterActionPermissionDecision(
                     isAllowed: false,
-                    message: "Pointer click is missing screen coordinates. Point at the control and try again.",
-                    requiresAccessibilityPermission: true,
+                    message: "Pointer click is missing screen coordinates.",
+                    requiresAccessibilityPermission: false,
                     requiresScreenRecordingPermission: false
                 )
             }
@@ -155,7 +173,32 @@ extension PermissionManager {
                 requiresScreenRecordingPermission: false
             )
 
-        case .keyboardShortcut, .select:
+        case .keyboardShortcut:
+            if !snapshot.hasAccessibilityPermission {
+                return DexterActionPermissionDecision(
+                    isAllowed: false,
+                    message: "Accessibility permission is required before Dexter can drive UI input actions.",
+                    requiresAccessibilityPermission: true,
+                    requiresScreenRecordingPermission: false
+                )
+            }
+            let shortcut = action.parameters["shortcut"] ?? action.parameters["keys"] ?? ""
+            guard !shortcut.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return DexterActionPermissionDecision(
+                    isAllowed: false,
+                    message: "Keyboard shortcut actions require a non-empty shortcut description.",
+                    requiresAccessibilityPermission: true,
+                    requiresScreenRecordingPermission: false
+                )
+            }
+            return DexterActionPermissionDecision(
+                isAllowed: true,
+                message: "Dexter approved the keyboard shortcut through the computer runtime.",
+                requiresAccessibilityPermission: true,
+                requiresScreenRecordingPermission: false
+            )
+
+        case .select:
             if !snapshot.hasAccessibilityPermission {
                 return DexterActionPermissionDecision(
                     isAllowed: false,
@@ -166,16 +209,24 @@ extension PermissionManager {
             }
             return DexterActionPermissionDecision(
                 isAllowed: false,
-                message: "UI input actions are not enabled in Dexter yet.",
+                message: "Select actions are not enabled in Dexter yet.",
                 requiresAccessibilityPermission: true,
                 requiresScreenRecordingPermission: false
             )
 
         case .scroll:
+            if !snapshot.hasAccessibilityPermission {
+                return DexterActionPermissionDecision(
+                    isAllowed: false,
+                    message: "Accessibility permission is required before Dexter can scroll at the pointer.",
+                    requiresAccessibilityPermission: true,
+                    requiresScreenRecordingPermission: false
+                )
+            }
             return DexterActionPermissionDecision(
-                isAllowed: false,
-                message: "Scroll actions are not enabled in Dexter yet.",
-                requiresAccessibilityPermission: false,
+                isAllowed: true,
+                message: "Dexter approved scrolling through the computer runtime.",
+                requiresAccessibilityPermission: true,
                 requiresScreenRecordingPermission: false
             )
 

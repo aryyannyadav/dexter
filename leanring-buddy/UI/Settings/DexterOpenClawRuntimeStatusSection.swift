@@ -17,12 +17,55 @@ struct DexterOpenClawRuntimeStatusSection: View {
         )
     }
 
+    private var computerUseFeatureRows: [DexterOpenClawComputerUseFeatureRow] {
+        DexterOpenClawComputerUseDescriptorPresentation.featureRows(
+            computerUseDescriptor: healthMonitor.preferredNodeSnapshot.computerUseDescriptor,
+            nodeSnapshot: healthMonitor.preferredNodeSnapshot,
+            discoveryReport: healthMonitor.capabilityDiscoveryReport
+        )
+    }
+
+    private var providerLabel: String {
+        let descriptor = healthMonitor.preferredNodeSnapshot.computerUseDescriptor
+        return descriptor.providerLabel ?? descriptor.providerIdentifier ?? "Unknown provider"
+    }
+
     var body: some View {
         DexterSettingsSection(title: showsTechnicalDetails ? "OpenClaw" : "Runtime") {
             DexterSettingsInfoRow(
                 title: "Status",
                 value: healthMonitor.connectionState.isConnected ? "Connected" : healthMonitor.statusLine
             )
+
+            if healthMonitor.preferredNodeSnapshot.isConnected {
+                DexterSettingsDivider()
+                DexterSettingsInfoRow(
+                    title: "Node",
+                    value: healthMonitor.preferredNodeSnapshot.displayName ?? healthMonitor.preferredNodeSnapshot.nodeIdentifier
+                )
+                DexterSettingsDivider()
+                DexterSettingsInfoRow(title: "Provider", value: providerLabel)
+                DexterSettingsDivider()
+                DexterSettingsInfoRow(
+                    title: "Accessibility",
+                    value: healthMonitor.preferredNodeSnapshot.permissions.accessibilityGranted ? "Granted" : "Required"
+                )
+                DexterSettingsDivider()
+                DexterSettingsInfoRow(
+                    title: "Screen Recording",
+                    value: healthMonitor.preferredNodeSnapshot.permissions.screenRecordingGranted ? "Granted" : "Required"
+                )
+            }
+
+            if !computerUseFeatureRows.isEmpty {
+                DexterSettingsDivider()
+                ForEach(Array(computerUseFeatureRows.enumerated()), id: \.element.id) { index, featureRow in
+                    if index > 0 {
+                        DexterSettingsDivider()
+                    }
+                    DexterOpenClawComputerUseFeatureSettingsRow(featureRow: featureRow)
+                }
+            }
 
             if showsTechnicalDetails {
                 if let version = healthMonitor.detectedOpenClawVersion {
@@ -62,6 +105,31 @@ struct DexterOpenClawRuntimeStatusSection: View {
             }
             .padding(.top, 6)
         }
+    }
+}
+
+private struct DexterOpenClawComputerUseFeatureSettingsRow: View {
+    let featureRow: DexterOpenClawComputerUseFeatureRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(featureRow.title)
+                    .font(DexterSettingsTypography.rowTitle())
+                    .foregroundColor(DS.Colors.textPrimary)
+                Spacer()
+                Text(featureRow.isAvailable ? "Available" : "Unavailable")
+                    .font(DexterSettingsTypography.rowSubtitle())
+                    .foregroundColor(featureRow.isAvailable ? DexterPastelColors.mint : DS.Colors.textTertiary)
+            }
+            if let detail = featureRow.detail {
+                Text(detail)
+                    .font(DexterSettingsTypography.rowSubtitle())
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 

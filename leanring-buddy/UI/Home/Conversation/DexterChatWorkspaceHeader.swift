@@ -27,11 +27,11 @@ struct DexterChatWorkspaceHeader: View {
 
             if let profile {
                 Button(action: { onOpenProfile?() }) {
-                    HStack(spacing: DexterSpacing.sm) {
-                        DexterAvatar(
+                    HStack(alignment: .center, spacing: DexterSpacing.sm) {
+                        DexterCharacterImage(
                             profile: profile,
-                            size: DexterAvatarSize.md,
                             characterState: characterState,
+                            size: 34,
                             animationEnabled: true
                         )
 

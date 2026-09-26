@@ -112,6 +112,16 @@ enum DexterToolRegistry {
                 computerUseDescriptor: context.discoveryReport.computerUseDescriptor
             )
         }
+        if let toolKind,
+           DexterOpenClawComputerUsePointerCapabilities.requiredComputerUseAction(for: toolKind) != nil {
+            return DexterOpenClawComputerUsePointerCapabilities.supportsToolExecution(
+                toolKind: toolKind,
+                parameters: definition.name == .mouseClick
+                    ? ["clickKind": "left"]
+                    : [:],
+                computerUseDescriptor: context.discoveryReport.computerUseDescriptor
+            )
+        }
         return true
     }
 

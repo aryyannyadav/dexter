@@ -74,6 +74,8 @@ final class DexterOrchestrator {
 
     private(set) var lastTypedAction: DexterAction?
     private(set) var pendingActionExecution: DexterPendingActionExecution?
+    private var pendingRemainingPlannedActions: [DexterAction] = []
+    private var compoundComputerActionRetryState: DexterCompoundComputerActionRetryState?
     let executionStateMachineRegistry: DexterExecutionStateMachineRegistry
     let toolRegistryGateway: DexterToolRegistryGateway
     private(set) var lastExecutionSnapshot: DexterExecutionMachineSnapshot?
@@ -82,6 +84,7 @@ final class DexterOrchestrator {
     let workspaceSnapshotStore: DexterWorkspaceSnapshotStore
     let fileWorkspaceStore: DexterFileWorkspaceStore
     let actionRecoveryLedger: DexterActionRecoveryLedger
+    let uiTargetVisionProvider: VisionProvider
     weak var activityRecorder: DexterActivityRecorder?
     var activityLinkageProvider: (() -> DexterActivityLinkage)?
 
@@ -105,7 +108,8 @@ final class DexterOrchestrator {
         proactiveAutomationSettingsStore: DexterProactiveAutomationSettingsStore? = nil,
         workspaceSnapshotStore: DexterWorkspaceSnapshotStore? = nil,
         fileWorkspaceStore: DexterFileWorkspaceStore? = nil,
-        actionRecoveryLedger: DexterActionRecoveryLedger? = nil
+        actionRecoveryLedger: DexterActionRecoveryLedger? = nil,
+        uiTargetVisionProvider: VisionProvider? = nil
     ) {
         self.contextAssembler = contextAssembler
         self.teachingSessionStore = teachingSessionStore ?? DexterTeachingSessionStore()
@@ -133,6 +137,18 @@ final class DexterOrchestrator {
         self.workspaceSnapshotStore = workspaceSnapshotStore ?? DexterWorkspaceSnapshotStore()
         self.fileWorkspaceStore = fileWorkspaceStore ?? DexterFileWorkspaceStore()
         self.actionRecoveryLedger = actionRecoveryLedger ?? DexterActionRecoveryLedger()
+        if let uiTargetVisionProvider {
+            self.uiTargetVisionProvider = uiTargetVisionProvider
+        } else if let gateway = modelProvider as? DexterModelGateway {
+            self.uiTargetVisionProvider = gateway.uiTargetVisionProvider
+        } else if let ollamaAdapter = modelProvider as? OllamaModelProviderAdapter {
+            self.uiTargetVisionProvider = ollamaAdapter.uiTargetVisionProvider
+        } else {
+            self.uiTargetVisionProvider = FallbackVisionProvider(
+                primaryProvider: CloudVisionProvider(),
+                fallbackProvider: nil
+            )
+        }
 
         if let runtimeUIStateStore = demonstrationPhaseStore {
             self.executionStateMachineRegistry.onExecutionSnapshotChanged = { snapshot in
@@ -244,6 +260,7 @@ final class DexterOrchestrator {
                 .cancel(message: "You cancelled the pending action.")
         }
         pendingActionExecution = nil
+        pendingRemainingPlannedActions = []
         demonstrationPhaseStore?.transition(to: .cancelled, detail: "Action cancelled")
         if let lastTypedAction, lastTypedAction.state == .awaitingConfirmation {
             let cancelledAction = lastTypedAction.withState(.cancelled)
@@ -266,15 +283,33 @@ final class DexterOrchestrator {
             executionStateMachineRegistry.machine(forExecutionIdentifier: $0)
         }
         resumedStateMachine?.acknowledgePermissionApproval()
-        if DexterComputerControlAuthorizationScope.actionQualifiesForSessionReuse(pending.action) {
-            actionPermissionSettingsStore.isComputerControlAuthorizedForSession = true
-        }
-        return await executeVerifiedAction(
+        DexterComputerControlAuthorization.grantUserAuthorization(store: actionPermissionSettingsStore)
+
+        let firstOutcome = await executeVerifiedAction(
             proposedAction: pending.action,
             context: pending.context,
             hasPersistedScreenContentGrant: pending.hasPersistedScreenContentGrant,
             confirmationGrant: confirmationGrant,
             executionStateMachine: resumedStateMachine
+        )
+
+        guard !pendingRemainingPlannedActions.isEmpty else {
+            return firstOutcome
+        }
+
+        let remainingActions = pendingRemainingPlannedActions
+        pendingRemainingPlannedActions = []
+
+        guard firstOutcome.pendingConfirmation == nil,
+              firstOutcome.action.state == .completed else {
+            return firstOutcome
+        }
+
+        return await continuePlannedComputerActions(
+            proposedActions: remainingActions,
+            context: pending.context,
+            hasPersistedScreenContentGrant: pending.hasPersistedScreenContentGrant,
+            priorSpokenSummary: firstOutcome.spokenSummary
         )
     }
 
@@ -345,6 +380,11 @@ final class DexterOrchestrator {
         applyMemoryBinding(from: options)
         memoryStore.observeUserMessageForInference(userTranscript)
         let memoryIntentOutcome = memoryStore.processMemoryIntents(fromUserMessage: userTranscript)
+        DexterHubMemoryMomentReporter.reportMemoryIntentOutcome(
+            memoryIntentOutcome,
+            userMessage: userTranscript,
+            memoryStore: memoryStore
+        )
         switch memoryIntentOutcome {
         case .userFacingResponse:
             DexterObservabilityLog.memory("intent_outcome=user_facing_response")
@@ -365,6 +405,24 @@ final class DexterOrchestrator {
             )
         }
 
+        if let retryResponse = await handleComputerActionRetryIfNeeded(
+            userTranscript: userTranscript,
+            dexterContext: DexterContext(userMessage: DexterUserMessageContext(text: userTranscript)),
+            hasPersistedScreenContentGrant: options.hasPersistedScreenContentGrant,
+            onTextChunk: onTextChunk
+        ) {
+            return retryResponse
+        }
+
+        let requiresComputerUIObservation = DexterComputerActionObservationPolicy.userMessageRequiresComputerUIObservation(
+            normalizedUserMessage: userTranscript.lowercased(),
+            userMessage: userTranscript
+        )
+        if requiresComputerUIObservation {
+            DexterObservabilityLog.task("route=computer_action")
+            DexterObservabilityLog.context("visualContextRequired=true")
+        }
+
         demonstrationPhaseStore?.transition(
             to: DexterDemonstrationPhase.seeing,
             detail: "Screenshot, pointer, active app, and window"
@@ -375,9 +433,11 @@ final class DexterOrchestrator {
             screenCaptureMode = .useOverride(screenCaptureOverride)
         } else if options.usePointAtContextRelevancePlan {
             screenCaptureMode = .captureAllDisplaysIfPermitted
+        } else if requiresComputerUIObservation {
+            screenCaptureMode = .captureAllDisplaysIfPermitted
         } else if let routingDecision = options.routingDecision {
             screenCaptureMode = routingDecision.requiresScreenCapture
-                ? .captureCursorDisplayIfPermitted
+                ? .captureAllDisplaysIfPermitted
                 : .skip
         } else if DexterContextRelevancePlanner.shouldRequestScreenCapture(forUserMessage: userTranscript) {
             screenCaptureMode = .captureCursorDisplayIfPermitted
@@ -405,6 +465,9 @@ final class DexterOrchestrator {
         }
 
         let contextPerformanceProfile: DexterContextPerformanceProfile = {
+            if requiresComputerUIObservation {
+                return .standard
+            }
             if let routingDecision = options.routingDecision {
                 return routingDecision.contextPerformanceProfile
             }
@@ -420,7 +483,8 @@ final class DexterOrchestrator {
             pointerLocationInScreenSpaceOverride: options.pointerLocationInScreenSpaceOverride,
             performanceProfile: contextPerformanceProfile,
             activeDexterProfileId: options.activeDexterProfileId,
-            activeFileWorkspaceId: options.activeFileWorkspaceId
+            activeFileWorkspaceId: options.activeFileWorkspaceId,
+            requiresComputerUIObservation: requiresComputerUIObservation
         )
 
         DexterTurnTrace.log("context assembly started")
@@ -432,12 +496,21 @@ final class DexterOrchestrator {
             }
         }
         var dexterContext = assemblyResult.legacyContext
+        DexterHubMemoryMomentReporter.reportContextualRecallIfAppropriate(
+            userMessage: userTranscript,
+            memoryIntentOutcome: memoryIntentOutcome,
+            retrievedMemories: dexterContext.persistentMemory.retrievedMemories
+        )
         if let profileId = options.activeDexterProfileId {
             dexterContext = DexterFileWorkspaceContextProvider.attachWorkspaceContext(
                 to: dexterContext,
                 profileId: profileId,
                 userMessage: userTranscript,
                 store: fileWorkspaceStore
+            )
+            DexterHubMemoryMomentReporter.reportProjectContextIfAvailable(
+                profileId: profileId,
+                fileWorkspaceStore: fileWorkspaceStore
             )
         }
         let contextPacket = assemblyResult.packet
@@ -534,7 +607,11 @@ final class DexterOrchestrator {
             )
         }
 
-        let responseMode = DexterIntentResponseModeMapper.responseMode(for: intentEngineResult.structuredIntent)
+        var responseMode = DexterIntentResponseModeMapper.responseMode(for: intentEngineResult.structuredIntent)
+        if options.routingDecision?.route == .computerAction {
+            responseMode = .act
+            DexterObservabilityLog.computer("route=computer_action")
+        }
 
         let teachingEngineResult = DexterTeachingEngine.evaluate(
             userMessage: userTranscript,
@@ -544,7 +621,19 @@ final class DexterOrchestrator {
         )
         lastTeachingEngineResult = teachingEngineResult
 
+        if teachingEngineResult.isTeachingTurn {
+            DexterHubTeachingMomentReporter.reportTeachingEngaged(
+                teachingEngineResult: teachingEngineResult,
+                contextPacket: contextPacket,
+                activePointInvokeSession: nil
+            )
+        }
+
         if let blockingTeachingMessage = teachingEngineResult.blockingUserMessage {
+            DexterHubTeachingMomentReporter.reportBlockingTeachingMessage(
+                blockingTeachingMessage,
+                session: teachingSessionStore.activeSession
+            )
             demonstrationPhaseStore?.transition(to: .done, detail: "Waiting for step completion")
             await onTextChunk(blockingTeachingMessage)
             return DexterOrchestratorModelResponse(
@@ -775,6 +864,14 @@ final class DexterOrchestrator {
             )
         }
 
+        if teachingEngineResult.isTeachingTurn {
+            DexterHubTeachingMomentReporter.reportLessonDelivery(
+                responseText: generationResult.fullResponseText,
+                teachingStyle: teachingEngineResult.teachingStyle,
+                session: teachingSessionStore.activeSession
+            )
+        }
+
         if executionStateMachineRegistry.latestSnapshot()?.currentPhase == .verifying
             || executionStateMachineRegistry.latestSnapshot()?.currentPhase == .executing {
             // UI stays on ACTING / VERIFYING until the execution state machine completes.
@@ -809,14 +906,15 @@ final class DexterOrchestrator {
             actionStore: actionStore,
             actionHistoryStore: actionHistoryStore,
             actionPermissionSettings: actionPermissionSettingsStore.currentSettings,
-            isComputerControlAuthorizedForSession: actionPermissionSettingsStore.isComputerControlAuthorizedForSession,
+            actionPermissionSettingsStore: actionPermissionSettingsStore,
             hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
             confirmationGrant: confirmationGrant,
             demonstrationPhaseStore: demonstrationPhaseStore,
             executionStateMachine: executionStateMachine,
             executionStateMachineRegistry: executionStateMachineRegistry,
             parentTaskIdentifier: parentTaskIdentifier,
-            actionRecoveryLedger: actionRecoveryLedger
+            actionRecoveryLedger: actionRecoveryLedger,
+            uiTargetVisionProvider: uiTargetVisionProvider
         )
         lastTypedAction = outcome.action
         pendingActionExecution = outcome.pendingConfirmation
@@ -832,6 +930,156 @@ final class DexterOrchestrator {
             )
         }
         return outcome
+    }
+
+    private func handleComputerActionRetryIfNeeded(
+        userTranscript: String,
+        dexterContext: DexterContext,
+        hasPersistedScreenContentGrant: Bool,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async -> DexterOrchestratorModelResponse? {
+        guard DexterActionRecoveryIntentRecognizer.recognizeRetry(fromUserMessage: userTranscript) else {
+            return nil
+        }
+
+        demonstrationPhaseStore?.transition(to: .planning, detail: "Retrying the last computer action")
+        DexterObservabilityLog.task("retry structured=true freshObservation=true")
+
+        let freshContext = await assembleFreshComputerActionContext(
+            userTranscript: userTranscript,
+            hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
+        )
+
+        if let retryState = compoundComputerActionRetryState {
+            let actionsToRetry = plannedActionsForCompoundRetry(
+                retryState: retryState,
+                freshContext: freshContext
+            )
+            DexterObservabilityLog.retry(
+                "failedStep=\(retryState.resumeFromStepIndex + 1) freshObservation=true actionCount=\(actionsToRetry.count)"
+            )
+            guard !actionsToRetry.isEmpty else {
+                let message = "There is no failed computer action step to retry."
+                await onTextChunk(message)
+                return DexterOrchestratorModelResponse(
+                    fullResponseText: message,
+                    context: freshContext,
+                    responseMode: .act
+                )
+            }
+            return await executePlannedComputerActions(
+                proposedActions: actionsToRetry,
+                responseMode: .act,
+                context: freshContext,
+                hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
+                onTextChunk: onTextChunk
+            )
+        }
+
+        guard let lastFailedAction = lastTypedAction,
+              lastFailedAction.state == .failed || lastFailedAction.state == .verificationFailed else {
+            let message = "There is no failed computer action to retry."
+            await onTextChunk(message)
+            return DexterOrchestratorModelResponse(
+                fullResponseText: message,
+                context: freshContext,
+                responseMode: .act
+            )
+        }
+
+        let retryAction = replannedRetryAction(from: lastFailedAction)
+        let outcome = await executeVerifiedAction(
+            proposedAction: retryAction,
+            context: freshContext,
+            hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
+        )
+        await onTextChunk(outcome.spokenSummary)
+        return DexterOrchestratorModelResponse(
+            fullResponseText: outcome.spokenSummary,
+            context: freshContext,
+            responseMode: .act
+        )
+    }
+
+    private func plannedActionsForCompoundRetry(
+        retryState: DexterCompoundComputerActionRetryState,
+        freshContext: DexterContext
+    ) -> [DexterAction] {
+        var startIndex = retryState.resumeFromStepIndex
+        if startIndex > 0,
+           compoundComputerPrerequisitesStillMet(
+               plannedActions: retryState.plannedActions,
+               upToExclusiveStepIndex: startIndex,
+               context: freshContext
+           ) {
+            DexterObservabilityLog.retry("skip_prerequisites=true fromStep=\(startIndex + 1)")
+        } else if startIndex > 0 {
+            startIndex = 0
+            DexterObservabilityLog.retry("rebuild_prerequisites=true fromStep=1")
+        }
+        guard startIndex < retryState.plannedActions.count else { return [] }
+        return Array(retryState.plannedActions[startIndex...])
+    }
+
+    private func compoundComputerPrerequisitesStillMet(
+        plannedActions: [DexterAction],
+        upToExclusiveStepIndex: Int,
+        context: DexterContext
+    ) -> Bool {
+        let prerequisiteActions = plannedActions.prefix(upToExclusiveStepIndex)
+        for prerequisiteAction in prerequisiteActions {
+            switch prerequisiteAction.type {
+            case .openApplication, .focusApplication:
+                let expectedApplicationName = prerequisiteAction.parameters["applicationName"]?.nonEmptyTrimmedValue
+                guard let expectedApplicationName else { return false }
+                let activeName = context.activeApplication.localizedName ?? ""
+                guard let canonicalExpected = DexterApplicationNameFormatter.canonicalApplicationName(from: expectedApplicationName),
+                      let canonicalActive = DexterApplicationNameFormatter.canonicalApplicationName(from: activeName) else {
+                    return false
+                }
+                if canonicalExpected.caseInsensitiveCompare(canonicalActive) != .orderedSame {
+                    return false
+                }
+            default:
+                continue
+            }
+        }
+        return true
+    }
+
+    private func replannedRetryAction(from failedAction: DexterAction) -> DexterAction {
+        if let uiDestination = failedAction.parameters["uiDestination"]?.nonEmptyTrimmedValue {
+            return DexterActionFactory.activateUserInterfaceDestination(
+                label: uiDestination,
+                applicationName: failedAction.parameters["parentApplicationName"]?.nonEmptyTrimmedValue
+            )
+        }
+        if let elementRef = failedAction.parameters["elementRef"]?.nonEmptyTrimmedValue,
+           failedAction.parameters["x"] == nil {
+            return DexterActionFactory.activateUserInterfaceDestination(
+                label: elementRef,
+                applicationName: failedAction.parameters["parentApplicationName"]?.nonEmptyTrimmedValue
+                    ?? failedAction.parameters["applicationName"]?.nonEmptyTrimmedValue
+            )
+        }
+        return failedAction.withState(.proposed)
+    }
+
+    private func assembleFreshComputerActionContext(
+        userTranscript: String,
+        hasPersistedScreenContentGrant: Bool
+    ) async -> DexterContext {
+        DexterObservabilityLog.context("visualContextRequired=true")
+        let assemblyRequest = DexterContextAssemblyRequest(
+            userMessage: userTranscript,
+            screenCaptureMode: .captureAllDisplaysIfPermitted,
+            includeRecentConversation: false,
+            recentConversationLimit: 0,
+            hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
+            performanceProfile: .standard,
+            requiresComputerUIObservation: true
+        )
+        return await contextAssembler.assembleContext(request: assemblyRequest)
     }
 
     private func handleActionUndoIfNeeded(
@@ -1097,15 +1345,67 @@ final class DexterOrchestrator {
             )
 
         case .action(let proposedAction):
-            if let targetApplicationName = proposedAction.parameters["applicationName"] {
+            return await executePlannedComputerActions(
+                proposedActions: [proposedAction],
+                responseMode: responseMode,
+                context: context,
+                hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
+                onTextChunk: onTextChunk
+            )
+
+        case .actionSequence(let proposedActions):
+            return await executePlannedComputerActions(
+                proposedActions: proposedActions,
+                responseMode: responseMode,
+                context: context,
+                hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
+                onTextChunk: onTextChunk
+            )
+        }
+    }
+
+    private func executePlannedComputerActions(
+        proposedActions: [DexterAction],
+        responseMode: DexterResponseMode,
+        context: DexterContext,
+        hasPersistedScreenContentGrant: Bool,
+        onTextChunk: @MainActor @Sendable (String) -> Void
+    ) async -> DexterOrchestratorModelResponse {
+        pendingRemainingPlannedActions = []
+        let capabilityInput = await toolRegistryGateway.productCapabilityBuildInput()
+        let productCapabilities = DexterProductCapabilityRegistry.buildCapabilities(
+            input: capabilityInputWithDexterAuthorization(capabilityInput)
+        )
+
+        var lastOutcome: DexterActionExecutionOutcome?
+        var executionContext = context
+        for (stepIndex, proposedAction) in proposedActions.enumerated() {
+            if stepIndex > 0 {
+                let userTranscriptForRefresh = executionContext.userTranscript
+                    ?? executionContext.userMessage.text
+                executionContext = await assembleFreshComputerActionContext(
+                    userTranscript: userTranscriptForRefresh,
+                    hasPersistedScreenContentGrant: hasPersistedScreenContentGrant
+                )
+            }
+
+            if let uiDestination = proposedAction.parameters["uiDestination"]?.nonEmptyTrimmedValue {
+                let parentApplicationName = proposedAction.parameters["parentApplicationName"]?.nonEmptyTrimmedValue ?? "frontmost"
+                DexterActionDiagnosticLog.intent(
+                    "type=navigate application=\(parentApplicationName) target=\(uiDestination)"
+                )
+            } else if proposedAction.type == .openApplication
+                || proposedAction.type == .focusApplication
+                || proposedAction.type == .quitApplication,
+                let targetApplicationName = proposedAction.parameters["applicationName"] {
                 DexterActionDiagnosticLog.intent("type=\(proposedAction.type.rawValue) target=\(targetApplicationName)")
             } else {
                 DexterActionDiagnosticLog.intent("type=\(proposedAction.type.rawValue)")
             }
-            DexterActionDiagnosticLog.plan("action=\(proposedAction.humanReadableDescription)")
+            DexterActionDiagnosticLog.plan(
+                "step=\(stepIndex + 1)/\(proposedActions.count) action=\(proposedAction.humanReadableDescription)"
+            )
 
-            let capabilityInput = await toolRegistryGateway.productCapabilityBuildInput()
-            let productCapabilities = DexterProductCapabilityRegistry.buildCapabilities(input: capabilityInput)
             switch DexterActionCapabilityGate.evaluate(action: proposedAction, capabilities: productCapabilities) {
             case .allowed:
                 break
@@ -1139,18 +1439,150 @@ final class DexterOrchestrator {
 
             let outcome = await executeVerifiedAction(
                 proposedAction: proposedAction,
+                context: executionContext,
+                hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
+                executionStateMachine: executionStateMachine
+            )
+            lastOutcome = outcome
+            DexterActionDiagnosticLog.action("completed state=\(outcome.action.state.rawValue)")
+
+            if outcome.pendingConfirmation != nil {
+                if stepIndex + 1 < proposedActions.count {
+                    pendingRemainingPlannedActions = Array(proposedActions[(stepIndex + 1)...])
+                } else {
+                    pendingRemainingPlannedActions = []
+                }
+                await onTextChunk(outcome.spokenSummary)
+                return DexterOrchestratorModelResponse(
+                    fullResponseText: outcome.spokenSummary,
+                    context: context,
+                    responseMode: responseMode
+                )
+            }
+
+            if outcome.action.state == .failed
+                || outcome.action.state == .verificationFailed
+                || outcome.action.state == .cancelled {
+                compoundComputerActionRetryState = DexterCompoundComputerActionRetryState(
+                    plannedActions: proposedActions,
+                    resumeFromStepIndex: stepIndex
+                )
+                await onTextChunk(outcome.spokenSummary)
+                return DexterOrchestratorModelResponse(
+                    fullResponseText: outcome.spokenSummary,
+                    context: executionContext,
+                    responseMode: responseMode
+                )
+            }
+        }
+
+        compoundComputerActionRetryState = nil
+        let finalOutcome = lastOutcome
+        let spokenSummary = finalOutcome?.spokenSummary
+            ?? "Dexter could not complete the requested computer actions."
+        await onTextChunk(spokenSummary)
+        return DexterOrchestratorModelResponse(
+            fullResponseText: spokenSummary,
+            context: context,
+            responseMode: responseMode
+        )
+    }
+
+    private func continuePlannedComputerActions(
+        proposedActions: [DexterAction],
+        context: DexterContext,
+        hasPersistedScreenContentGrant: Bool,
+        priorSpokenSummary: String
+    ) async -> DexterActionExecutionOutcome {
+        let capabilityInput = await toolRegistryGateway.productCapabilityBuildInput()
+        let productCapabilities = DexterProductCapabilityRegistry.buildCapabilities(
+            input: capabilityInputWithDexterAuthorization(capabilityInput)
+        )
+
+        var lastOutcome: DexterActionExecutionOutcome?
+        for (stepIndex, proposedAction) in proposedActions.enumerated() {
+            switch DexterActionCapabilityGate.evaluate(action: proposedAction, capabilities: productCapabilities) {
+            case .allowed:
+                break
+            case .blocked(let userMessage):
+                return DexterActionExecutionOutcome(
+                    action: proposedAction.withState(.failed),
+                    spokenSummary: userMessage,
+                    pendingConfirmation: nil,
+                    verificationReport: nil,
+                    turnRecord: nil,
+                    executionSnapshot: nil,
+                    recoveryMetadata: nil
+                )
+            }
+
+            let executionStateMachine = DexterExecutionStateMachine(
+                actionIdentifier: proposedAction.id,
+                parentTaskIdentifier: taskStateStore.activeWorkflowTask?.id
+            )
+            executionStateMachineRegistry.register(executionStateMachine)
+
+            let outcome = await executeVerifiedAction(
+                proposedAction: proposedAction,
                 context: context,
                 hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
                 executionStateMachine: executionStateMachine
             )
-            DexterActionDiagnosticLog.action("completed state=\(outcome.action.state.rawValue)")
-            await onTextChunk(outcome.spokenSummary)
-            return DexterOrchestratorModelResponse(
-                fullResponseText: outcome.spokenSummary,
-                context: context,
-                responseMode: responseMode
+            lastOutcome = outcome
+
+            if outcome.pendingConfirmation != nil {
+                if stepIndex + 1 < proposedActions.count {
+                    pendingRemainingPlannedActions = Array(proposedActions[(stepIndex + 1)...])
+                }
+                return outcome
+            }
+
+            if outcome.action.state == .failed
+                || outcome.action.state == .verificationFailed
+                || outcome.action.state == .cancelled {
+                return outcome
+            }
+        }
+
+        guard let lastOutcome else {
+            return DexterActionExecutionOutcome(
+                action: DexterActionFactory.inspectScreen().withState(.failed),
+                spokenSummary: priorSpokenSummary,
+                pendingConfirmation: nil,
+                verificationReport: nil,
+                turnRecord: nil,
+                executionSnapshot: nil,
+                recoveryMetadata: nil
             )
         }
+
+        let combinedSummary = "\(priorSpokenSummary) \(lastOutcome.spokenSummary)"
+        return DexterActionExecutionOutcome(
+            action: lastOutcome.action,
+            spokenSummary: combinedSummary,
+            pendingConfirmation: lastOutcome.pendingConfirmation,
+            verificationReport: lastOutcome.verificationReport,
+            turnRecord: lastOutcome.turnRecord,
+            executionSnapshot: lastOutcome.executionSnapshot,
+            recoveryMetadata: lastOutcome.recoveryMetadata
+        )
+    }
+
+    private func capabilityInputWithDexterAuthorization(
+        _ capabilityInput: DexterProductCapabilityBuildInput
+    ) -> DexterProductCapabilityBuildInput {
+        DexterProductCapabilityBuildInput(
+            discoveryReport: capabilityInput.discoveryReport,
+            gatewayConnected: capabilityInput.gatewayConnected,
+            hasAccessibilityPermission: capabilityInput.hasAccessibilityPermission,
+            hasScreenRecordingPermission: capabilityInput.hasScreenRecordingPermission,
+            hasMicrophonePermission: capabilityInput.hasMicrophonePermission,
+            hasScreenContentPermission: capabilityInput.hasScreenContentPermission,
+            integrations: capabilityInput.integrations,
+            isDexterComputerControlUserAuthorized: DexterComputerControlAuthorization.isUserAuthorized(
+                store: actionPermissionSettingsStore
+            )
+        )
     }
 
     private func applyMemoryBinding(from options: DexterModelGenerationOptions) {
@@ -1175,6 +1607,7 @@ enum DexterOrchestratorFactory {
         fileWorkspaceStore: DexterFileWorkspaceStore? = nil
     ) -> DexterOrchestrator {
         let ollamaModelProvider = OllamaModelProviderAdapter(aiProvider: ollamaProvider)
+        let uiTargetVisionProvider = ollamaModelProvider.uiTargetVisionProvider
         let claudeModelProvider: ClaudeModelProvider? = {
             guard DexterWorkerProxyClient.isWorkerBaseURLConfigured else { return nil }
             let proxyURL = "\(DexterWorkerProxyClient.workerBaseURL)/chat"
@@ -1219,7 +1652,8 @@ enum DexterOrchestratorFactory {
             taskStateStore: taskStateStore,
             demonstrationPhaseStore: demonstrationPhaseStore,
             demonstrationSessionStore: demonstrationSessionStore ?? DexterDemonstrationSessionStore(),
-            fileWorkspaceStore: fileWorkspaceStore
+            fileWorkspaceStore: fileWorkspaceStore,
+            uiTargetVisionProvider: uiTargetVisionProvider
         )
     }
 }

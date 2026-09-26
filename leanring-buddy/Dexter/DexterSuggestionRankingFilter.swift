@@ -28,7 +28,14 @@ enum DexterSuggestionRankingFilter {
         items.append(contentsOf: scopedWork.map { DexterHomeSuggestionItem.profileWork($0) })
 
         items = items.filter { item in
-            !isDuplicateOfRecentActivity(item: item, recentTitles: recentConversationTitles, recentPrompts: recentAcceptedPrompts)
+            if isPersonaStarterProfileWork(item) {
+                return true
+            }
+            return !isDuplicateOfRecentActivity(
+                item: item,
+                recentTitles: recentConversationTitles,
+                recentPrompts: recentAcceptedPrompts
+            )
         }
 
         items = deduplicateByIntent(items)
@@ -72,6 +79,11 @@ enum DexterSuggestionRankingFilter {
             result.append(item)
         }
         return result
+    }
+
+    private static func isPersonaStarterProfileWork(_ item: DexterHomeSuggestionItem) -> Bool {
+        guard case .profileWork(let work) = item else { return false }
+        return work.source.kind == .personaStarter
     }
 
     private static func normalize(_ text: String) -> String {

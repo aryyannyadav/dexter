@@ -9,7 +9,7 @@ struct DexterHomeSuggestionsView: View {
     @ObservedObject var companionManager: CompanionManager
 
     private var items: [DexterHomeSuggestionItem] {
-        companionManager.dexterSuggestionStore.presentationState.homeSuggestions
+        companionManager.dexterSuggestionStore.presentationState.aggregatedSuggestions
     }
 
     var body: some View {
@@ -23,7 +23,8 @@ struct DexterHomeSuggestionsView: View {
                     sectionTitle: "",
                     showsEmptyStateWhenNoSuggestions: true,
                     layout: .centerStage,
-                    marksSuggestionsReadOnAppear: true
+                    marksSuggestionsReadOnAppear: true,
+                    scope: .allDexters
                 )
                 .dexterHomeStaggeredEntrance(index: 1)
             }
@@ -42,11 +43,7 @@ struct DexterHomeSuggestionsView: View {
                 .foregroundColor(DexterColors.textPrimary)
                 .multilineTextAlignment(.center)
 
-            if items.isEmpty {
-                Text("Nothing to suggest right now.")
-                    .font(DexterTypography.secondary())
-                    .foregroundColor(DexterColors.textSecondary)
-            } else {
+            if !items.isEmpty {
                 Text(
                     "\(items.count) idea\(items.count == 1 ? "" : "s"), ready when you are."
                 )

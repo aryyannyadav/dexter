@@ -7,6 +7,7 @@ import Foundation
 
 enum DexterActionPlanningOutcome: Equatable {
     case action(DexterAction)
+    case actionSequence([DexterAction])
     case unsupported(message: String)
     case notAnAction
 }
@@ -28,9 +29,21 @@ enum DexterActionPlanner {
             return .action(DexterActionFactory.listRunningApplications(contextSummary: contextSummary(from: context)))
         }
 
-        if let lifecycleIntent = DexterApplicationLifecycleIntentParser.parse(from: normalizedMessage) {
-            let plannedAction = action(for: lifecycleIntent, context: context)
-            return .action(plannedAction)
+        if let lifecyclePlan = DexterApplicationLifecycleIntentParser.parsePlan(from: normalizedMessage) {
+            let lifecycleIntent = lifecyclePlan.intent
+            var plannedActions = [action(for: lifecycleIntent, context: context)]
+            plannedActions.append(
+                contentsOf: DexterCompoundUserActionPlanParser.followUpActions(
+                    normalizedUserMessage: normalizedMessage,
+                    context: context,
+                    launchedApplicationName: lifecycleIntent.applicationName,
+                    inApplicationDestinationLabel: lifecyclePlan.inApplicationDestinationLabel
+                )
+            )
+            if plannedActions.count == 1 {
+                return .action(plannedActions[0])
+            }
+            return .actionSequence(plannedActions)
         }
 
         if matchesFixItIntent(normalizedMessage) {
@@ -49,10 +62,35 @@ enum DexterActionPlanner {
         switch browserPlan {
         case .action(let browserAction):
             return .action(browserAction)
+        case .actionSequence(let browserActions):
+            return .actionSequence(browserActions)
         case .unsupported(let message):
             return .unsupported(message: message)
         case .notAnAction:
             break
+        }
+
+        if let computerInteractionIntent = DexterComputerInteractionIntentParser.parse(from: normalizedMessage) {
+            switch computerInteractionIntent {
+            case .scroll(let direction, let amount):
+                return .action(DexterActionFactory.scroll(direction: direction, amount: amount))
+            case .typeText(let text):
+                return .action(DexterActionFactory.typeText(text))
+            case .keyboardShortcut(let shortcutDescription):
+                return .action(DexterActionFactory.keyboardShortcut(shortcutDescription))
+            case .clickPointer(let button):
+                guard let pointerLocation = DexterPointerControlWorkflow.validatedPointerLocationInScreenSpace(for: context) else {
+                    return .unsupported(message: DexterPointerControlWorkflow.pointFirstMessage)
+                }
+                let controlLabel = DexterPointerControlWorkflow.controlLabelForConfirmation(from: context)
+                return .action(
+                    DexterActionFactory.clickAtScreenLocation(
+                        pointerLocation,
+                        label: controlLabel,
+                        clickKind: button
+                    )
+                )
+            }
         }
 
         if DexterPointerControlWorkflow.matchesPointerActIntent(normalizedUserMessage: normalizedMessage) {
@@ -73,7 +111,7 @@ enum DexterActionPlanner {
         }
 
         return .unsupported(
-            message: "Dexter can open, focus, quit, or list running applications, run browser actions through OpenClaw, explain what you're pointing at, apply a taught code fix, or click the control under your pointer."
+            message: "Dexter can open, focus, quit, or list running applications, run browser actions through OpenClaw, scroll, type, press shortcuts, explain what you're pointing at, apply a taught code fix, or click the control under your pointer."
         )
     }
 

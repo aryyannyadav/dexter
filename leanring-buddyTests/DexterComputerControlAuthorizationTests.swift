@@ -32,11 +32,47 @@ struct DexterComputerControlAuthorizationTests {
         )
     }
 
-    @Test func sessionAuthorizationDoesNotSkipTypeTextConfirmation() {
+    @Test func sessionAuthorizationSkipsTypeTextConfirmation() {
         let typeText = DexterActionFactory.typeText("hello")
         #expect(
             DexterActionConfirmationPolicy.requiresUserConfirmation(
                 action: typeText,
+                settings: .default,
+                confirmationGrant: nil,
+                isComputerControlAuthorizedForSession: true
+            ) == false
+        )
+    }
+
+    @Test func explicitAllowGrantsPersistedComputerControlAuthorization() {
+        let store = InMemoryDexterActionPermissionSettingsStore()
+        #expect(!DexterComputerControlAuthorization.isUserAuthorized(store: store))
+        DexterComputerControlAuthorization.grantUserAuthorization(store: store)
+        #expect(DexterComputerControlAuthorization.isUserAuthorized(store: store))
+    }
+
+    @Test func persistedAuthorizationSurvivesStoreRecreation() {
+        let suiteName = "dexter-computer-control-auth-\(UUID().uuidString)"
+        let userDefaults = UserDefaults(suiteName: suiteName)!
+        let firstStore = UserDefaultsDexterActionPermissionSettingsStore(userDefaults: userDefaults)
+        firstStore.isComputerControlAuthorizedForSession = true
+
+        let secondStore = UserDefaultsDexterActionPermissionSettingsStore(userDefaults: userDefaults)
+        #expect(secondStore.isComputerControlAuthorizedForSession)
+
+        userDefaults.removePersistentDomain(forName: suiteName)
+    }
+
+    @Test func sessionAuthorizationDoesNotSkipDestructiveFileDelete() {
+        let deleteFile = DexterAction(
+            type: .fileOperation,
+            parameters: ["fileAction": "delete", "path": "~/Documents/example.txt"],
+            riskLevel: .highRisk,
+            humanReadableDescription: "Delete example file."
+        )
+        #expect(
+            DexterActionConfirmationPolicy.requiresUserConfirmation(
+                action: deleteFile,
                 settings: .default,
                 confirmationGrant: nil,
                 isComputerControlAuthorizedForSession: true

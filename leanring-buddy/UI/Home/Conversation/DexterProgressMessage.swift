@@ -26,10 +26,10 @@ struct DexterProgressMessage: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: DexterMessageMetrics.avatarToBubbleGap) {
-            DexterAvatar(
+            DexterCharacterImage(
                 profile: profile,
-                size: DexterAvatarSize.sm,
                 characterState: .working,
+                size: DexterAvatarSize.sm + 4,
                 animationEnabled: true
             )
 

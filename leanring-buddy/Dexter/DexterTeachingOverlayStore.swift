@@ -37,18 +37,17 @@ final class DexterTeachingOverlayStore: ObservableObject {
             return
         }
 
-        let label = session.userFacingSemanticTargetLabel
         let annotations = DexterPointAskHighlightPlanner.planCaptureMarkerAnnotations(
             pointerLocationInScreenSpace: pointerLocation,
             displayFrameInScreenSpace: displayFrame,
-            targetLabel: label
+            targetLabel: nil
         )
 
         let overlaySession = DexterTeachingOverlaySession(
             displayFrameInScreenSpace: displayFrame,
             annotations: annotations,
             currentStepIndex: nil,
-            lifetimeSeconds: 600
+            lifetimeSeconds: 12
         )
         present(session: overlaySession)
     }

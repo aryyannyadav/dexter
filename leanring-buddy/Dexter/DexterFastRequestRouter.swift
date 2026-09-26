@@ -37,12 +37,18 @@ enum DexterFastRequestRouter {
             return screenContextDecision(pinPointer: true)
         }
 
+        if requiresScreenContext(forNormalizedMessage: normalizedMessage) {
+            if matchesTeachingIntent(normalizedMessage) {
+                return teachingDecision(requiresScreen: true)
+            }
+            return screenContextDecision(pinPointer: true)
+        }
+
         if matchesComputerActionRoute(userMessage: trimmedMessage, normalizedMessage: normalizedMessage) {
-            return DexterRequestRoutingDecision(
-                route: .computerAction,
-                requiresScreenCapture: false,
-                pinPointerForContext: false,
-                contextPerformanceProfile: .minimal
+            DexterObservabilityLog.computer("route=computer_action")
+            return computerActionRoutingDecision(
+                userMessage: trimmedMessage,
+                normalizedMessage: normalizedMessage
             )
         }
 
@@ -58,10 +64,6 @@ enum DexterFastRequestRouter {
         if matchesTeachingIntent(normalizedMessage) {
             let needsScreen = matchesTeachingRequiresScreen(normalizedMessage)
             return teachingDecision(requiresScreen: needsScreen)
-        }
-
-        if requiresScreenContext(forNormalizedMessage: normalizedMessage) {
-            return screenContextDecision(pinPointer: true)
         }
 
         if DexterTrivialQuestionClassifier.isTrivialQuestion(trimmedMessage)
@@ -174,9 +176,21 @@ enum DexterFastRequestRouter {
             "this button", "that button", "this field", "that field", "this toggle",
             "this menu", "this dialog", "this window", "this tab", "this panel",
             "this error", "this warning", "this message", "this code", "this line",
+            "this thing", "that thing",
             "under my cursor", "under the cursor", "pointing at", "on screen", "on my screen"
         ]
-        return uiAnchoredPhrases.contains { normalizedMessage.contains($0) }
+        if uiAnchoredPhrases.contains(where: { normalizedMessage.contains($0) }) {
+            return true
+        }
+        let standaloneDeicticPhrases = [
+            "what is this", "what's this", "whats this",
+            "explain this", "teach me this", "fix this", "do this",
+            "what should i do next", "what should i do here"
+        ]
+        let trimmedForPhraseMatch = normalizedMessage.trimmingCharacters(in: CharacterSet(charactersIn: "?!.,"))
+        return standaloneDeicticPhrases.contains { phrase in
+            trimmedForPhraseMatch == phrase || trimmedForPhraseMatch.hasPrefix(phrase + " ")
+        }
     }
 
     private static func matchesScreenExplicitPhrases(_ normalizedMessage: String) -> Bool {
@@ -220,7 +234,42 @@ enum DexterFastRequestRouter {
         return integrationSignals.contains { normalizedMessage.contains($0) }
     }
 
+    private static func computerActionRoutingDecision(
+        userMessage: String,
+        normalizedMessage: String
+    ) -> DexterRequestRoutingDecision {
+        let requiresComputerUIObservation = DexterComputerActionObservationPolicy.userMessageRequiresComputerUIObservation(
+            normalizedUserMessage: normalizedMessage,
+            userMessage: userMessage
+        )
+        DexterObservabilityLog.context("visualContextRequired=\(requiresComputerUIObservation)")
+        if requiresComputerUIObservation {
+            DexterObservabilityLog.task("route=computer_action uiObservation=true")
+        }
+        return DexterRequestRoutingDecision(
+            route: .computerAction,
+            requiresScreenCapture: requiresComputerUIObservation,
+            pinPointerForContext: requiresComputerUIObservation,
+            contextPerformanceProfile: requiresComputerUIObservation ? .standard : .minimal
+        )
+    }
+
     private static func matchesComputerActionRoute(userMessage: String, normalizedMessage: String) -> Bool {
+        if DexterActionRecoveryIntentRecognizer.recognizeRetry(fromUserMessage: userMessage) {
+            return true
+        }
+
+        if DexterApplicationLifecycleIntentParser.parsePlan(from: normalizedMessage) != nil {
+            return true
+        }
+
+        if DexterComputerActionObservationPolicy.userMessageRequiresComputerUIObservation(
+            normalizedUserMessage: normalizedMessage,
+            userMessage: userMessage
+        ) {
+            return true
+        }
+
         let structuredIntent = DexterIntentRouter.recognize(userMessage: userMessage, context: nil)
         switch structuredIntent.kind {
         case .open, .close, .focus, .run:

@@ -20,12 +20,11 @@ struct DexterMessageBubble: View {
 
     var body: some View {
         DexterChatMarkdownText(text: displayText, isError: isError)
+            .frame(maxWidth: maxWidth, alignment: .leading)
             .padding(.horizontal, DexterMessageMetrics.horizontalPadding)
             .padding(.vertical, DexterMessageMetrics.verticalPadding)
             .background(assistantBubbleBackground)
             .overlay(assistantBubbleBorder)
-            .frame(maxWidth: maxWidth, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
             .overlay(alignment: .bottomLeading) {
                 if showsTail {
                     DexterBubbleTail(corner: .bottomLeading)
@@ -44,14 +43,14 @@ struct DexterMessageBubble: View {
     }
 
     private var assistantBubbleBackground: some View {
-        RoundedRectangle(cornerRadius: DexterRadii.messageBubble, style: .continuous)
+        RoundedRectangle(cornerRadius: DexterMessageMetrics.bubbleCornerRadius, style: .continuous)
             .fill(assistantFillColor)
     }
 
     private var assistantBubbleBorder: some View {
-        RoundedRectangle(cornerRadius: DexterRadii.messageBubble, style: .continuous)
+        RoundedRectangle(cornerRadius: DexterMessageMetrics.bubbleCornerRadius, style: .continuous)
             .stroke(
-                isError ? DexterSurfaceColors.warning.opacity(0.35) : DexterSurfaceColors.border.opacity(0.55),
+                isError ? DexterSurfaceColors.warning.opacity(0.35) : DexterSurfaceColors.border.opacity(0.4),
                 lineWidth: 1
             )
     }
@@ -71,17 +70,13 @@ struct UserMessageBubble: View {
             .lineSpacing(DexterTypography.messageCompactLineSpacing)
             .multilineTextAlignment(.leading)
             .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: maxWidth, alignment: .leading)
             .padding(.horizontal, DexterMessageMetrics.horizontalPadding)
             .padding(.vertical, DexterMessageMetrics.verticalPadding)
             .background(
-                RoundedRectangle(cornerRadius: DexterRadii.messageBubble, style: .continuous)
+                RoundedRectangle(cornerRadius: DexterMessageMetrics.bubbleCornerRadius, style: .continuous)
                     .fill(userFillColor)
-            )
-            .frame(maxWidth: maxWidth, alignment: .trailing)
-            .fixedSize(horizontal: false, vertical: true)
-            .overlay(
-                RoundedRectangle(cornerRadius: DexterRadii.messageBubble, style: .continuous)
-                    .stroke(userBorderColor, lineWidth: 1)
             )
             .overlay(alignment: .bottomTrailing) {
                 if showsTail {
@@ -91,20 +86,14 @@ struct UserMessageBubble: View {
                         .offset(x: -10, y: 4)
                 }
             }
+            .fixedSize(horizontal: true, vertical: false)
     }
 
     private var userFillColor: Color {
         if isError {
             return DexterSurfaceColors.error.opacity(0.12)
         }
-        return DexterPastelColors.lavender.opacity(0.28)
-    }
-
-    private var userBorderColor: Color {
-        if isError {
-            return DexterSurfaceColors.error.opacity(0.3)
-        }
-        return DexterPastelColors.lavender.opacity(0.45)
+        return DexterPastelColors.lavender.opacity(0.32)
     }
 }
 

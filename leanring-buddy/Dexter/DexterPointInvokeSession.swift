@@ -43,4 +43,53 @@ struct DexterPointInvokeSession: Equatable {
         }
         return pointerSemanticTarget.confirmationLabel
     }
+
+    /// Hub secondary line: resolved target plus app/window when safe (no invented labels).
+    var hubTargetPresentationSubtitle: String? {
+        if let userFacingTargetLabel = userFacingSemanticTargetLabel {
+            if let applicationName = activeApplicationDisplayName?.nonEmptyTrimmedValue {
+                return "\(userFacingTargetLabel) · \(applicationName)"
+            }
+            return userFacingTargetLabel
+        }
+        if let windowTitle = activeWindowTitle?.nonEmptyTrimmedValue,
+           let applicationName = activeApplicationDisplayName?.nonEmptyTrimmedValue {
+            return "\(applicationName) — \(windowTitle)"
+        }
+        return activeApplicationDisplayName?.nonEmptyTrimmedValue
+    }
+
+    static let hubLowConfidenceThreshold = 0.45
+
+    var requiresHubTargetConfirmationBeat: Bool {
+        guard let pointerSemanticTarget else { return true }
+        if pointerSemanticTarget.confidence < Self.hubLowConfidenceThreshold {
+            return true
+        }
+        return userFacingSemanticTargetLabel == nil
+    }
+
+    /// Label for low-confidence Hub copy; nil when there is nothing honest to show.
+    var hubUncertainTargetPromptLabel: String? {
+        guard requiresHubTargetConfirmationBeat else { return nil }
+        if let userFacingTargetLabel = userFacingSemanticTargetLabel {
+            return userFacingTargetLabel
+        }
+        guard let pointerSemanticTarget else { return nil }
+        let confirmationLabel = pointerSemanticTarget.confirmationLabel
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !confirmationLabel.isEmpty, confirmationLabel != "the control under your pointer" else {
+            return nil
+        }
+        return confirmationLabel
+    }
+
+    /// Highest-weight evidence source for diagnostics (accessibility → app metadata → OCR → vision).
+    var primaryResolutionSourceForDiagnostics: String {
+        guard let pointerSemanticTarget else { return "none" }
+        guard let strongestEvidence = pointerSemanticTarget.evidence.max(by: { $0.weight < $1.weight }) else {
+            return "none"
+        }
+        return strongestEvidence.source.rawValue
+    }
 }

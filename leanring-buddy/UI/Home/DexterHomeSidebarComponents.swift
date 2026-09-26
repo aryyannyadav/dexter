@@ -149,11 +149,11 @@ struct DexterSidebarDexterRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: DexterSpacing.sm) {
+        HStack(alignment: .center, spacing: DexterSpacing.sm) {
             avatarControl
 
             Button(action: action) {
-                HStack(spacing: DexterSpacing.sm) {
+                HStack(alignment: .center, spacing: DexterSpacing.sm) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(profile.name)
                             .font(DexterTypography.bodyMedium())
@@ -208,13 +208,14 @@ struct DexterSidebarDexterRow: View {
 
     @ViewBuilder
     private var avatarControl: some View {
-        let avatar = DexterAvatar(
+        let avatar = DexterCharacterImage(
             profile: profile,
-            size: isCompact ? DexterAvatarSize.md : 44,
-            visualState: isSelected || isHovered ? .highlighted : .normal,
             characterState: isSelected ? .listening : .idle,
-            animationEnabled: isSelected || isHovered
+            size: isCompact ? 40 : 44,
+            animationEnabled: isSelected || isHovered,
+            isHovered: isHovered
         )
+
         if let onOpenProfile {
             Button(action: onOpenProfile) {
                 avatar

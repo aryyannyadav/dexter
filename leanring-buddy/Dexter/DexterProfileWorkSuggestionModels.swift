@@ -21,6 +21,7 @@ enum DexterProfileWorkSuggestionSourceKind: String, Codable, Equatable {
     case unfinishedDexterTask
     case failedAction
     case userCreatedTask
+    case personaStarter
 }
 
 struct DexterProfileWorkSuggestionSource: Codable, Equatable {

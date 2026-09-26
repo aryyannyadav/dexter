@@ -112,8 +112,11 @@ final class DexterVoiceCoordinator: ObservableObject {
     ) {
         guard settingsStore.currentSettings.isPushToTalkEnabled else { return }
 
-        // Allow dictation-driven state while thinking; speaking is interrupted explicitly elsewhere.
+        // Speaking is interrupted by push-to-talk; show listening as soon as capture starts.
         if interactionState == .speaking {
+            if isRecording || isPreparing {
+                interactionState = .listening
+            }
             return
         }
 

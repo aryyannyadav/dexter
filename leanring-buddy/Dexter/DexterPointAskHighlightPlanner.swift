@@ -22,14 +22,14 @@ enum DexterPointAskHighlightPlanner {
             DexterAnnotation(
                 kind: .targetRing,
                 center: overlayPoint,
-                size: CGSize(width: 64, height: 64),
-                targetOpacity: 0.92
+                size: CGSize(width: 48, height: 48),
+                targetOpacity: 0.55
             ),
             DexterAnnotation(
                 kind: .circle,
                 center: overlayPoint,
-                size: CGSize(width: 36, height: 36),
-                targetOpacity: 0.75
+                size: CGSize(width: 28, height: 28),
+                targetOpacity: 0.42
             )
         ]
 

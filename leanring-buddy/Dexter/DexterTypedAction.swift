@@ -189,18 +189,32 @@ enum DexterActionFactory {
         )
     }
 
-    static func clickAtScreenLocation(_ locationInScreenSpace: CGPoint, label: String) -> DexterAction {
+    static func clickAtScreenLocation(
+        _ locationInScreenSpace: CGPoint,
+        label: String,
+        clickKind: String = "left"
+    ) -> DexterAction {
         let xCoordinate = String(format: "%.0f", locationInScreenSpace.x)
         let yCoordinate = String(format: "%.0f", locationInScreenSpace.y)
+        let humanReadableVerb: String
+        switch clickKind.lowercased() {
+        case "right":
+            humanReadableVerb = "Right-click"
+        case "double":
+            humanReadableVerb = "Double-click"
+        default:
+            humanReadableVerb = "Click"
+        }
         return DexterAction(
             type: .click,
             parameters: [
                 "x": xCoordinate,
                 "y": yCoordinate,
-                "label": label
+                "label": label,
+                "clickKind": clickKind
             ],
             riskLevel: .highRisk,
-            humanReadableDescription: "Click \(label) at your pointer location."
+            humanReadableDescription: "\(humanReadableVerb) \(label) at your pointer location."
         )
     }
 
@@ -230,6 +244,44 @@ enum DexterActionFactory {
             parameters: ["shortcut": shortcutDescription],
             riskLevel: .highRisk,
             humanReadableDescription: "Press keyboard shortcut \(shortcutDescription)."
+        )
+    }
+
+    static func activateUserInterfaceDestination(
+        label: String,
+        applicationName: String?,
+        contextSummary: String? = nil
+    ) -> DexterAction {
+        var parameters: [String: String] = [
+            "uiDestination": label,
+            "computerNavigation": "activate",
+            "verificationHint": label
+        ]
+        if let applicationName {
+            parameters["parentApplicationName"] = applicationName
+        }
+        if let contextSummary {
+            parameters["contextSummary"] = contextSummary
+        }
+        let applicationPhrase = applicationName.map { " in \($0)" } ?? ""
+        return DexterAction(
+            type: .navigate,
+            parameters: parameters,
+            riskLevel: .lowRisk,
+            humanReadableDescription: "Open \(label)\(applicationPhrase)."
+        )
+    }
+
+    static func openForegroundApplicationSettings(contextSummary: String? = nil) -> DexterAction {
+        var parameters = ["shortcut": "command ,"]
+        if let contextSummary {
+            parameters["contextSummary"] = contextSummary
+        }
+        return DexterAction(
+            type: .keyboardShortcut,
+            parameters: parameters,
+            riskLevel: .lowRisk,
+            humanReadableDescription: "Open Settings or Preferences in the frontmost application."
         )
     }
 

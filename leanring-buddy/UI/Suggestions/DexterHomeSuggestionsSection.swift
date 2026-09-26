@@ -11,9 +11,10 @@ struct DexterHomeSuggestionsSection: View {
     var showsEmptyStateWhenNoSuggestions: Bool = true
     var layout: DexterSuggestionCarousel.Layout = .centerStage
     var marksSuggestionsReadOnAppear: Bool = false
+    var scope: DexterHomeSuggestionPresentationScope = .allDexters
 
     private var items: [DexterHomeSuggestionItem] {
-        companionManager.dexterSuggestionStore.presentationState.homeSuggestions
+        scope.resolvedSuggestions(from: companionManager.dexterSuggestionStore.presentationState)
     }
 
     var body: some View {
@@ -40,6 +41,10 @@ struct DexterHomeSuggestionsSection: View {
                     layout: layout
                 )
                 .frame(maxWidth: .infinity)
+                .animation(
+                    DexterMotionPreferences.shouldReduceMotion ? nil : DexterSuggestionMotion.exitEase,
+                    value: items.map(\.id)
+                )
             } else if showsEmptyStateWhenNoSuggestions {
                 suggestionsEmptyState
             }
@@ -54,17 +59,17 @@ struct DexterHomeSuggestionsSection: View {
     }
 
     private var suggestionsEmptyState: some View {
-        VStack(spacing: DexterSpacing.lg) {
+        VStack(spacing: DexterSpacing.md) {
             if let profile = companionManager.dexterProfileStore.activeProfile {
-                DexterCharacterStagePortrait(
+                DexterCharacterImage(
                     profile: profile,
                     characterState: .idle,
-                    height: 160,
+                    size: 52,
                     animationEnabled: true
                 )
             }
 
-            VStack(spacing: DexterSpacing.sm) {
+            VStack(spacing: DexterSpacing.xs) {
                 Text("Nothing to suggest right now.")
                     .font(DexterTypography.bodyMedium())
                     .foregroundColor(DexterSurfaceColors.textPrimary)

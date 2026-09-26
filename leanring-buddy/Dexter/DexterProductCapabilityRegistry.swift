@@ -13,6 +13,8 @@ struct DexterProductCapabilityBuildInput: Equatable {
     let hasMicrophonePermission: Bool
     let hasScreenContentPermission: Bool
     let integrations: [DexterIntegration]
+    /// Dexter user authorization for ordinary computer control (distinct from OpenClaw/node/OS permissions).
+    let isDexterComputerControlUserAuthorized: Bool
 }
 
 enum DexterProductCapabilityRegistry {
@@ -22,39 +24,49 @@ enum DexterProductCapabilityRegistry {
         let openClawBrowser = input.discoveryReport.isCapabilityAvailable(.browserProxy)
         let openClawFiles = input.discoveryReport.isCapabilityAvailable(.file)
         let openClawTerminal = input.discoveryReport.isCapabilityAvailable(.systemRun)
+        let computerUseDescriptor = input.discoveryReport.computerUseDescriptor
 
-        let localComputerLifecycle = input.hasAccessibilityPermission
+        let openClawAdvertisesAppLaunch = computerUseDescriptor.advertisesComputerUseAction("launch_app")
+            || computerUseDescriptor.advertisesComputerUseAction("bring_to_front")
+        let openClawAdvertisesPointer = computerUseDescriptor.advertisesComputerUseAction("left_click")
+            && computerUseDescriptor.advertisesComputerUseAction("type")
+            && computerUseDescriptor.advertisesComputerUseAction("key")
+
         let computerControlAvailability: DexterProductCapabilityAvailability
-        if openClawComputer {
+        if openClawComputer && openClawAdvertisesPointer {
             computerControlAvailability = .available
-        } else if localComputerLifecycle {
+        } else if openClawComputer && input.isDexterComputerControlUserAuthorized {
             computerControlAvailability = .available
-        } else if input.gatewayConnected && !openClawComputer {
+        } else if openClawComputer {
             computerControlAvailability = .requiresPermission
         } else if !input.gatewayConnected {
             computerControlAvailability = .requiresConnection
+        } else if input.gatewayConnected {
+            computerControlAvailability = .unavailable
         } else {
             computerControlAvailability = .unavailable
         }
 
         let launchAvailability: DexterProductCapabilityAvailability
-        if openClawComputer || localComputerLifecycle {
+        if openClawComputer && openClawAdvertisesAppLaunch {
             launchAvailability = .available
         } else if !input.gatewayConnected {
             launchAvailability = .requiresConnection
+        } else if openClawComputer {
+            launchAvailability = .unavailable
         } else {
-            launchAvailability = .requiresPermission
+            launchAvailability = .unavailable
         }
 
         let pointerAvailability: DexterProductCapabilityAvailability
-        if openClawComputer && input.hasAccessibilityPermission {
+        if openClawComputer && openClawAdvertisesPointer {
             pointerAvailability = .available
         } else if openClawComputer {
-            pointerAvailability = .requiresPermission
-        } else if input.hasAccessibilityPermission {
-            pointerAvailability = .available
+            pointerAvailability = .unavailable
+        } else if !input.gatewayConnected {
+            pointerAvailability = .requiresConnection
         } else {
-            pointerAvailability = .requiresPermission
+            pointerAvailability = .unavailable
         }
 
         let screenContextAvailability: DexterProductCapabilityAvailability
@@ -92,12 +104,7 @@ enum DexterProductCapabilityRegistry {
             filesAvailability = .available
         }
 
-        let terminalAvailability: DexterProductCapabilityAvailability
-        if openClawTerminal {
-            terminalAvailability = .available
-        } else {
-            terminalAvailability = .available
-        }
+        let terminalAvailability: DexterProductCapabilityAvailability = .available
 
         let voiceRecognition: DexterProductCapabilityAvailability = input.hasMicrophonePermission
             ? .available
@@ -113,7 +120,7 @@ enum DexterProductCapabilityRegistry {
                 permission: computerControlAvailability == .requiresPermission
                     ? "Accessibility and Dexter's computer runtime"
                     : nil,
-                provider: openClawComputer ? "OpenClaw + Mac" : "Mac",
+                provider: openClawComputer ? "OpenClaw" : "Unavailable",
                 icon: "cursorarrow.click",
                 skill: true
             ),
@@ -124,7 +131,7 @@ enum DexterProductCapabilityRegistry {
                 category: .computer,
                 availability: launchAvailability,
                 permission: launchAvailability == .requiresPermission ? "Accessibility" : nil,
-                provider: "Mac workspace",
+                provider: openClawComputer ? "OpenClaw computer.act" : "Unavailable",
                 icon: "app.badge",
                 skill: false
             ),
@@ -190,7 +197,7 @@ enum DexterProductCapabilityRegistry {
                 category: .files,
                 availability: terminalAvailability,
                 permission: nil,
-                provider: openClawTerminal ? "OpenClaw + local" : "Local policy",
+                provider: openClawTerminal ? "OpenClaw system.run" : "Local policy",
                 icon: "terminal",
                 skill: true
             ),

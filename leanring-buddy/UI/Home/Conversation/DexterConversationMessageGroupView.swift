@@ -20,8 +20,6 @@ struct DexterConversationMessageGroupView: View {
 
     @State private var hoveredMessageId: UUID?
 
-    private let avatarColumnWidth: CGFloat = 36
-
     private var assistantBubbleMaxWidth: CGFloat {
         min(
             columnMaxWidth * DexterMessageMetrics.regularMaxWidthRatio,
@@ -58,13 +56,12 @@ struct DexterConversationMessageGroupView: View {
 
     private var assistantGroup: some View {
         HStack(alignment: .top, spacing: DexterMessageMetrics.avatarToBubbleGap) {
-            DexterAvatar(
+            DexterCharacterImage(
                 profile: profile,
-                size: DexterAvatarSize.md,
                 characterState: characterState,
+                size: DexterAvatarSize.md,
                 animationEnabled: animateCharacter
             )
-            .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: DexterMessageMetrics.intraGroupSpacing) {
                 ForEach(Array(group.messages.enumerated()), id: \.element.id) { index, message in
@@ -77,16 +74,14 @@ struct DexterConversationMessageGroupView: View {
     }
 
     private var userGroup: some View {
-        HStack(alignment: .top, spacing: 0) {
-            Spacer(minLength: avatarColumnWidth + DexterMessageMetrics.avatarToBubbleGap)
-
-            VStack(alignment: .trailing, spacing: DexterMessageMetrics.intraGroupSpacing) {
-                ForEach(Array(group.messages.enumerated()), id: \.element.id) { index, message in
+        VStack(alignment: .trailing, spacing: DexterMessageMetrics.intraGroupSpacing) {
+            ForEach(Array(group.messages.enumerated()), id: \.element.id) { index, message in
+                HStack {
+                    Spacer(minLength: 0)
                     userMessageBubble(message: message, isLastInGroup: index == group.messages.count - 1)
                 }
             }
         }
-        .frame(maxWidth: .infinity)
     }
 
     private func assistantMessageBubble(

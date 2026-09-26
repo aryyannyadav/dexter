@@ -37,7 +37,7 @@ struct DexterSuggestionHeroActionPills: View {
         Button(action: action) {
             pillLabel(title: title, isPrimary: isPrimary)
         }
-        .buttonStyle(DexterTactileButtonStyle())
+        .buttonStyle(DexterSuggestionPillButtonStyle())
         .pointerCursor()
     }
 

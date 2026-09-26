@@ -36,6 +36,16 @@ struct DexterSuggestionCarousel: View {
         .onAppear {
             scrollPositionID = items.first?.id
         }
+        .onChange(of: items.map(\.id)) { _, itemIDs in
+            guard let scrollPositionID, itemIDs.contains(scrollPositionID) else {
+                scrollPositionID = items.first?.id
+                return
+            }
+        }
+        .animation(
+            DexterMotionPreferences.shouldReduceMotion ? nil : DexterSuggestionMotion.deckSpring,
+            value: scrollPositionID
+        )
     }
 
     private var compactHorizontalCarousel: some View {
@@ -45,6 +55,12 @@ struct DexterSuggestionCarousel: View {
                     suggestionCard(for: item, index: index, usesHero: false)
                         .frame(width: cardWidth)
                         .id(item.id)
+                        .transition(
+                            .asymmetric(
+                                insertion: .opacity.combined(with: .offset(y: 8)),
+                                removal: .opacity.combined(with: .scale(scale: 0.96))
+                            )
+                        )
                 }
             }
             .scrollTargetLayout()
@@ -60,10 +76,11 @@ struct DexterSuggestionCarousel: View {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let depth = index - activeIndex
                 if depth > 0 && depth <= 2 {
-                    suggestionCard(for: item, index: index, usesHero: false)
+                    suggestionCard(for: item, index: index, usesHero: false, showsLeadingCharacter: false)
                         .frame(width: cardWidth * (1 - CGFloat(depth) * 0.04))
                         .scaleEffect(1 - CGFloat(depth) * 0.035)
                         .offset(y: CGFloat(depth) * 14)
+                        .rotationEffect(.degrees(Double(depth) * 1.2))
                         .opacity(0.42 - CGFloat(depth - 1) * 0.08)
                         .allowsHitTesting(false)
                         .zIndex(Double(-depth))
@@ -71,10 +88,16 @@ struct DexterSuggestionCarousel: View {
             }
 
             if let activeItem = items[safe: activeIndex] {
-                suggestionCard(for: activeItem, index: activeIndex, usesHero: true)
+                suggestionCard(for: activeItem, index: activeIndex, usesHero: true, showsLeadingCharacter: true)
                     .frame(width: cardWidth)
                     .id(activeItem.id)
                     .zIndex(10)
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.combined(with: .offset(y: 8)),
+                            removal: .opacity.combined(with: .scale(scale: 0.96))
+                        )
+                    )
             }
         }
         .frame(maxWidth: cardWidth)
@@ -82,13 +105,20 @@ struct DexterSuggestionCarousel: View {
         .padding(.bottom, items.count > 1 ? DexterSpacing.md : 0)
     }
 
-    private func suggestionCard(for item: DexterHomeSuggestionItem, index: Int, usesHero: Bool) -> some View {
+    private func suggestionCard(
+        for item: DexterHomeSuggestionItem,
+        index: Int,
+        usesHero: Bool,
+        showsLeadingCharacter: Bool = true
+    ) -> some View {
         DexterSuggestionCard(
             item: item,
             profile: profile(for: item),
             status: companionManager.dexterSuggestionStore.presentationState.status(for: item.id),
             isPrimary: index == 0,
             usesHeroPresentation: usesHero,
+            showsLeadingCharacter: showsLeadingCharacter,
+            staggerIndex: index,
             onPrimaryAction: { accept(item) },
             onSecondaryAction: { companionManager.dexterSuggestionStore.dismissHomeSuggestion(item) },
             onAdjust: { option in

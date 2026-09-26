@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dexter Teach Demo — Eventra architecture</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "SF Pro Text", system-ui, sans-serif;
+        background: #0b0c10;
+        color: #e8eaed;
+      }
+      body {
+        margin: 0;
+        padding: 48px 32px 64px;
+        max-width: 880px;
+      }
+      h1 {
+        font-size: 1.35rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      p.lead {
+        color: #9aa3ad;
+        line-height: 1.55;
+        max-width: 52ch;
+      }
+      .diagram {
+        margin-top: 40px;
+        padding: 32px;
+        border-radius: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent);
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 16px;
+        align-items: center;
+        justify-content: center;
+      }
+      .node {
+        min-width: 140px;
+        padding: 18px 20px;
+        border-radius: 14px;
+        text-align: center;
+        font-weight: 600;
+        font-size: 0.95rem;
+      }
+      .node--app {
+        background: rgba(94, 196, 220, 0.15);
+        border: 1px solid rgba(94, 196, 220, 0.35);
+      }
+      .node--db {
+        background: rgba(125, 212, 160, 0.12);
+        border: 1px solid rgba(125, 212, 160, 0.35);
+      }
+      .arrow {
+        color: #5ec4dc;
+        font-size: 1.4rem;
+        user-select: none;
+      }
+      .callout {
+        margin-top: 28px;
+        padding: 16px 18px;
+        border-left: 3px solid #5ec4dc;
+        background: rgba(94, 196, 220, 0.06);
+        font-size: 0.92rem;
+        line-height: 1.5;
+      }
+      .callout strong {
+        color: #5ec4dc;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Eventra — request flow (demo page)</h1>
+    <p class="lead">
+      Use this page for Demo 2. Point at the <strong>MongoDB</strong> box or the arrow, then ask Dexter to teach it.
+    </p>
+
+    <div class="diagram" id="dexter-teach-target">
+      <div class="row">
+        <div class="node node--app">Eventra API</div>
+        <span class="arrow" aria-hidden>→</span>
+        <div class="node node--db" id="mongodb-node">MongoDB</div>
+      </div>
+      <div class="callout">
+        <strong>Teach prompt:</strong> “Teach me this.” or “What does this diagram show?”
+      </div>
+    </div>
+  </body>
+</html>

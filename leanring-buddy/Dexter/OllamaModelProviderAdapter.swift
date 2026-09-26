@@ -8,7 +8,9 @@ import Foundation
 /// Bridges Dexter orchestration (`ModelProvider`) to the local `AIProvider` (Ollama).
 final class OllamaModelProviderAdapter: ModelProvider {
     private let aiProvider: OllamaProvider
-    private let visionProvider: VisionProvider
+    let visionProvider: VisionProvider
+
+    var uiTargetVisionProvider: VisionProvider { visionProvider }
 
     var modelIdentifier: String {
         aiProvider.configuredModelName

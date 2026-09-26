@@ -34,7 +34,8 @@ final class DexterToolRegistryGateway {
             hasScreenRecordingPermission: permissionSnapshot.hasScreenRecordingPermission,
             hasMicrophonePermission: permissionSnapshot.hasMicrophonePermission,
             hasScreenContentPermission: permissionSnapshot.hasScreenContentPermission,
-            integrations: integrations
+            integrations: integrations,
+            isDexterComputerControlUserAuthorized: false
         )
     }
 

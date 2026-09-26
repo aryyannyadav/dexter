@@ -5,6 +5,7 @@
 
 import Combine
 import Foundation
+import SwiftUI
 
 @MainActor
 final class DexterSuggestionStore: ObservableObject {
@@ -111,20 +112,73 @@ final class DexterSuggestionStore: ObservableObject {
             persistenceStore.markShown(identifier: suggestion.id)
         }
 
-        let profileWork = companionManager.dexterProfileWorkSuggestionStore.suggestionsForHome(
-            activeProfileId: activeProfileId
-        )
+        let allProfileWork = companionManager.dexterProfileStore.profiles.flatMap { profile in
+            companionManager.dexterProfileWorkSuggestionStore.suggestions(forProfileId: profile.id)
+        }
 
-        let ranked = DexterSuggestionRankingFilter.rankedHomeSuggestions(
+        let rankedAggregated = DexterSuggestionRankingFilter.rankedHomeSuggestions(
             contextSuggestions: activeSuggestions,
-            profileWorkSuggestions: profileWork,
-            activeProfileId: activeProfileId,
+            profileWorkSuggestions: allProfileWork,
+            activeProfileId: nil,
             recentConversationTitles: profileScopedRecents.map(\.title),
             recentAcceptedPrompts: recentAcceptedPrompts,
             evaluatedAt: evaluatedAt
         )
 
-        presentationState.updateHomeSuggestions(ranked.prefix(6).map { $0 })
+        let aggregatedRotationSeed = DexterHomeSuggestionDisplayPlanner.rotationSeed(
+            activeProfileId: nil,
+            evaluatedAt: evaluatedAt,
+            rankedItemIDs: rankedAggregated.map(\.id)
+        )
+        let displayAggregated = DexterHomeSuggestionDisplayPlanner.planAggregatedHome(
+            rankedEligible: rankedAggregated,
+            maxCount: DexterHomeSuggestionDisplayPlanner.homeDisplayLimit,
+            rotationSeed: aggregatedRotationSeed
+        )
+
+        var suggestionsByProfile: [UUID: [DexterHomeSuggestionItem]] = [:]
+        for profile in companionManager.dexterProfileStore.profiles {
+            let profileWork = companionManager.dexterProfileWorkSuggestionStore.suggestions(forProfileId: profile.id)
+            let contextForProfile = activeSuggestions.filter { suggestion in
+                if let suggestionProfileId = suggestion.dexterProfileId {
+                    return suggestionProfileId == profile.id
+                }
+                return profile.id == activeProfileId
+            }
+            let rankedForProfile = DexterSuggestionRankingFilter.rankedHomeSuggestions(
+                contextSuggestions: contextForProfile,
+                profileWorkSuggestions: profileWork,
+                activeProfileId: profile.id,
+                recentConversationTitles: profileScopedRecents.map(\.title),
+                recentAcceptedPrompts: recentAcceptedPrompts,
+                evaluatedAt: evaluatedAt
+            )
+            let profileRotationSeed = DexterHomeSuggestionDisplayPlanner.rotationSeed(
+                activeProfileId: profile.id,
+                evaluatedAt: evaluatedAt,
+                rankedItemIDs: rankedForProfile.map(\.id)
+            )
+            suggestionsByProfile[profile.id] = DexterHomeSuggestionDisplayPlanner.plan(
+                rankedEligible: rankedForProfile,
+                maxCount: DexterHomeSuggestionDisplayPlanner.homeDisplayLimit,
+                rotationSeed: profileRotationSeed
+            )
+        }
+
+        presentationState.updatePresentation(
+            aggregated: displayAggregated,
+            profileSuggestionsByProfileId: suggestionsByProfile
+        )
+
+        #if DEBUG
+        logSuggestionPresentationDiagnostics(
+            aggregatedCount: displayAggregated.count,
+            suggestionsByProfile: suggestionsByProfile,
+            rankedAggregatedCount: rankedAggregated.count,
+            allProfileWorkCount: allProfileWork.count,
+            contextCount: activeSuggestions.count
+        )
+        #endif
 
         if !hadUnreadBefore && hasUnreadSuggestions {
             companionManager.dexterAvatarPresence.notifySuggestionAttention()
@@ -132,14 +186,17 @@ final class DexterSuggestionStore: ObservableObject {
     }
 
     func dismissHomeSuggestion(_ item: DexterHomeSuggestionItem) {
-        presentationState.setStatus(.dismissed, for: item.id)
-        switch item {
-        case .context:
-            dismissSuggestion(identifier: item.id)
-        case .profileWork(let suggestion):
-            companionManager?.dexterProfileWorkSuggestionStore.dismiss(suggestion)
+        withAnimation(DexterSuggestionMotion.exitEase) {
+            presentationState.setStatus(.dismissed, for: item.id)
+            switch item {
+            case .context:
+                persistenceStore.markDismissed(identifier: item.id)
+                activeSuggestions.removeAll { $0.id == item.id }
+            case .profileWork(let suggestion):
+                companionManager?.dexterProfileWorkSuggestionStore.dismiss(suggestion)
+            }
+            removeFromHomePresentation(itemID: item.id)
         }
-        removeFromHomePresentation(itemID: item.id)
     }
 
     func acceptHomeSuggestion(_ item: DexterHomeSuggestionItem, userPromptOverride: String? = nil) {
@@ -190,8 +247,10 @@ final class DexterSuggestionStore: ObservableObject {
             updated.isUnread = false
             return updated
         }
-        let updatedHome = presentationState.homeSuggestions
-        presentationState.updateHomeSuggestions(updatedHome)
+        presentationState.updatePresentation(
+            aggregated: presentationState.aggregatedSuggestions,
+            profileSuggestionsByProfileId: presentationState.profileSuggestionsByProfileId
+        )
     }
 
     private func reconcileRunningSuggestionOutcome() {
@@ -253,15 +312,40 @@ final class DexterSuggestionStore: ObservableObject {
             try? await Task.sleep(nanoseconds: 1_400_000_000)
             guard !Task.isCancelled else { return }
             if let runningSuggestionItemID {
-                removeFromHomePresentation(itemID: runningSuggestionItemID)
-                presentationState.clearStatus(for: runningSuggestionItemID)
+                withAnimation(DexterSuggestionMotion.exitEase) {
+                    removeFromHomePresentation(itemID: runningSuggestionItemID)
+                    presentationState.clearStatus(for: runningSuggestionItemID)
+                }
             }
             runningSuggestionItemID = nil
         }
     }
 
     private func removeFromHomePresentation(itemID: String) {
-        let filtered = presentationState.homeSuggestions.filter { $0.id != itemID }
-        presentationState.updateHomeSuggestions(filtered)
+        presentationState.removeSuggestionFromPresentation(itemID: itemID)
     }
+
+    #if DEBUG
+    private func logSuggestionPresentationDiagnostics(
+        aggregatedCount: Int,
+        suggestionsByProfile: [UUID: [DexterHomeSuggestionItem]],
+        rankedAggregatedCount: Int,
+        allProfileWorkCount: Int,
+        contextCount: Int
+    ) {
+        let profileStore = companionManager?.dexterProfileStore
+        let nameForProfile: (UUID) -> String = { profileId in
+            profileStore?.profile(withId: profileId)?.name ?? profileId.uuidString.prefix(6).description
+        }
+        let perProfile = suggestionsByProfile
+            .map { "\(nameForProfile($0.key))=\($0.value.count)" }
+            .sorted()
+            .joined(separator: ", ")
+        print(
+            "[DEXTER][SUGGESTIONS] home_eligible=\(aggregatedCount) ranked_pool=\(rankedAggregatedCount) " +
+            "profile_work=\(allProfileWorkCount) context=\(contextCount) | \(perProfile)"
+        )
+    }
+    #endif
+
 }

@@ -98,6 +98,10 @@ enum DexterTool {
             return .listRunningApplications
         case DexterActionType.click.rawValue:
             if browserAction == "click" { return .browserInteraction }
+            if let elementRef = actionRequest.parameters["elementRef"]?.nonEmptyTrimmedValue,
+               !elementRef.isEmpty {
+                return .click
+            }
             let xCoordinate = actionRequest.parameters["x"] ?? ""
             let yCoordinate = actionRequest.parameters["y"] ?? ""
             return Double(xCoordinate) != nil && Double(yCoordinate) != nil ? .click : nil
@@ -114,6 +118,9 @@ enum DexterTool {
             let url = actionRequest.parameters["url"] ?? ""
             return url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : .browserInteraction
         case DexterActionType.navigate.rawValue:
+            if actionRequest.parameters["uiDestination"]?.nonEmptyTrimmedValue != nil {
+                return .click
+            }
             let url = actionRequest.parameters["url"] ?? actionRequest.parameters["destination"] ?? ""
             let query = actionRequest.parameters["query"] ?? ""
             if !browserAction.isEmpty || !url.isEmpty || !query.isEmpty {

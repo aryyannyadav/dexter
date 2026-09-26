@@ -26,7 +26,7 @@ ALT_SOURCE = REPO_ROOT / "scripts/character-source/dexter_character_sheet.jpg"
 ASSETS_ROOT = REPO_ROOT / "leanring-buddy/Assets.xcassets"
 CANVAS = 1024
 MARGIN_FRACTION = 0.06
-TARGET_BODY_HEIGHT_FRACTION = 0.72  # of canvas
+TARGET_BODY_HEIGHT_FRACTION = 0.80  # of canvas — larger visible character in compact avatars
 FOOT_BASELINE_FRACTION = 0.88  # y position of bbox bottom
 
 STATE_NAMES = [

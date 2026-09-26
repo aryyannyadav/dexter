@@ -52,6 +52,27 @@ enum DexterContextCollectionPlanner {
             )
         }
 
+        if request.requiresComputerUIObservation {
+            return DexterContextCollectionPlan(
+                minimumRelevanceLevel: .object,
+                collectPermissions: true,
+                collectPointer: false,
+                collectPointerTarget: false,
+                collectActiveApplication: true,
+                collectActiveWindow: true,
+                collectSelectedText: false,
+                collectScreenContext: screenCaptureRequested(for: request),
+                collectClipboard: false,
+                collectConversation: false,
+                collectRecentActions: false,
+                collectCurrentTask: false,
+                collectMemory: false,
+                collectProjectContext: false,
+                collectBrowserContext: false,
+                collectAvailableTools: false
+            )
+        }
+
         if request.performanceProfile == .minimal
             || DexterTrivialQuestionClassifier.isTrivialQuestion(request.userMessage) {
             return DexterContextCollectionPlan(

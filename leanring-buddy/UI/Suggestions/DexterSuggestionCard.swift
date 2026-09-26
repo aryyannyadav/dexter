@@ -11,6 +11,8 @@ struct DexterSuggestionCard: View {
     let status: DexterSuggestionPresentationStatus
     var isPrimary: Bool = true
     var usesHeroPresentation: Bool = false
+    var showsLeadingCharacter: Bool = true
+    var staggerIndex: Int = 0
     let onPrimaryAction: () -> Void
     let onSecondaryAction: (() -> Void)?
     let onAdjust: ((DexterSuggestionAdjustOption) -> Void)?
@@ -19,118 +21,131 @@ struct DexterSuggestionCard: View {
 
     @State private var isHovered = false
     @State private var isPressed = false
+    @State private var isExiting = false
+    @State private var showsAcceptFlash = false
+
+    private var displayedCharacterState: DexterCharacterState {
+        if showsAcceptFlash || status == .completed {
+            return .success
+        }
+        return characterStateForCard
+    }
 
     var body: some View {
-        Group {
-            if usesHeroPresentation {
-                heroCard
-            } else {
-                compactCard
-            }
-        }
-        .scaleEffect(isPressed ? 0.985 : (isHovered ? 1.01 : 1))
-        .animation(DexterAnimation.fastSpring, value: isHovered)
-        .animation(DexterAnimation.fastSpring, value: isPressed)
-        .onHover { isHovered = $0 }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in isPressed = true }
-                .onEnded { _ in isPressed = false }
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Suggestion: \(item.title). \(item.subtitle)")
+        cardContent
+            .scaleEffect(cardScale, anchor: .center)
+            .opacity(isExiting ? 0 : 1)
+            .offset(x: isExiting ? 14 : 0, y: isExiting ? 6 : (isHovered && !DexterMotionPreferences.shouldReduceMotion ? -2 : 0))
+            .animation(DexterSuggestionMotion.hoverEase, value: isHovered)
+            .animation(DexterSuggestionMotion.exitEase, value: isExiting)
+            .dexterSuggestionCardEntrance(staggerIndex: staggerIndex)
+            .onHover { isHovered = $0 }
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in isPressed = true }
+                    .onEnded { _ in isPressed = false }
+            )
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Suggestion: \(item.title). \(item.subtitle)")
     }
 
-    private var heroCard: some View {
-        ZStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: DexterSpacing.md) {
-                Color.clear.frame(height: 36)
-
-                Text(item.sourceLabel.uppercased())
-                    .font(DexterTypography.micro())
-                    .foregroundColor(DexterColors.textTertiary)
-
-                Text(item.title)
-                    .font(DexterTypography.cardTitle())
-                    .foregroundColor(DexterSurfaceColors.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text(item.subtitle)
-                    .font(DexterTypography.secondary())
-                    .foregroundColor(DexterSurfaceColors.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                actionRow
-            }
-            .padding(DexterSpacing.lg)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(heroCardBackground)
-            .overlay(heroCardBorder)
-            .shadow(color: Color.black.opacity(isHovered ? 0.2 : 0.12), radius: isHovered ? 16 : 10, y: 6)
-
-            if let profile {
-                DexterCharacterStagePortrait(
-                    profile: profile,
-                    characterState: characterStateForCard,
-                    height: 88,
-                    animationEnabled: isHovered || status == .running
-                )
-                .offset(y: -44)
-                .allowsHitTesting(false)
-            }
-        }
+    private var cardScale: CGFloat {
+        if isExiting { return 0.98 }
+        if isPressed { return 0.985 }
+        return 1
     }
 
-    private var compactCard: some View {
+    private var cardContent: some View {
         VStack(alignment: .leading, spacing: DexterSpacing.md) {
-            HStack(alignment: .top, spacing: DexterSpacing.sm) {
-                compactCharacterView
-                    .offset(y: -4)
+            HStack(alignment: .center, spacing: 14) {
+                DexterSuggestionLeadingCharacter(
+                    profile: profile,
+                    characterState: displayedCharacterState,
+                    showsCharacter: showsLeadingCharacter,
+                    isHovered: isHovered,
+                    animationEnabled: isHovered || status == .running || showsAcceptFlash,
+                    staggerIndex: staggerIndex
+                )
 
-                VStack(alignment: .leading, spacing: DexterSpacing.xs) {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !usesHeroPresentation {
+                        HStack {
+                            Text(DexterHomeSuggestionDisplayPlanner.categoryLabel(for: item).uppercased())
+                                .font(.system(size: 10, weight: .semibold))
+                                .tracking(0.35)
+                                .foregroundColor(categoryTint.opacity(0.95))
+                            Spacer(minLength: 0)
+                            Button(action: performDismiss) {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(DexterSurfaceColors.textMuted)
+                                    .padding(6)
+                            }
+                            .buttonStyle(.plain)
+                            .pointerCursor()
+                            .accessibilityLabel("Dismiss suggestion")
+                        }
+                    }
+
                     Text(item.title)
-                        .font(isPrimary ? DexterTypography.bodyMedium() : DexterTypography.messageCompact())
+                        .font(.system(size: usesHeroPresentation ? 17 : 16, weight: .semibold))
                         .foregroundColor(DexterSurfaceColors.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
 
+                    if let personaLabel = personaLabelText {
+                        Text(personaLabel)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(categoryTint.opacity(0.92))
+                    }
+
                     Text(item.subtitle)
-                        .font(DexterTypography.metadata())
+                        .font(.system(size: 13))
                         .foregroundColor(DexterSurfaceColors.textSecondary)
+                        .lineLimit(usesHeroPresentation ? 2 : 3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Spacer(minLength: 0)
-
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(DexterSurfaceColors.textMuted)
-                        .padding(6)
-                }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .accessibilityLabel("Dismiss suggestion")
             }
 
             actionRow
         }
-        .padding(DexterSpacing.lg)
-        .background(cardBackground)
-        .overlay(cardBorder)
-        .shadow(color: Color.black.opacity(isHovered ? 0.14 : 0.06), radius: isHovered ? 10 : 6, y: 3)
+        .padding(usesHeroPresentation ? DexterSpacing.lg + 4 : DexterSpacing.lg)
+        .frame(minHeight: 150, alignment: .top)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dexterCardSurface(
+            accentColor: categoryTint,
+            isHovered: isHovered && !isExiting,
+            cornerRadius: DexterRadii.card
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: DexterRadii.card, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            DexterPastelColors.suggestionSurface(for: item.accentIndex).opacity(0.22),
+                            Color.clear
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .allowsHitTesting(false)
+        )
     }
 
-    @ViewBuilder
-    private var compactCharacterView: some View {
+    private var categoryTint: Color {
+        profile?.accentColor ?? DexterPastelColors.suggestionSurface(for: item.accentIndex)
+    }
+
+    private var personaLabelText: String? {
         if let profile {
-            DexterCharacterStagePortrait(
-                profile: profile,
-                characterState: characterStateForCard,
-                height: 48,
-                animationEnabled: status == .running
-            )
-            .frame(width: 48)
+            return profile.name
         }
+        if let name = DexterHomeSuggestionDisplayPlanner.personaDisplayName(for: item) {
+            return name
+        }
+        return nil
     }
 
     private var characterStateForCard: DexterCharacterState {
@@ -193,27 +208,23 @@ struct DexterSuggestionCard: View {
             }
         default:
             if usesHeroPresentation {
-                heroActionPills
+                DexterSuggestionHeroActionPills(
+                    primaryTitle: item.primaryActionTitle,
+                    adjustOptions: adjustOptions ?? [],
+                    onDismiss: performDismiss,
+                    onPrimary: performAccept,
+                    onAdjust: onAdjust
+                )
+                .padding(.top, DexterSpacing.xs)
             } else {
                 compactActionRow
             }
         }
     }
 
-    private var heroActionPills: some View {
-        DexterSuggestionHeroActionPills(
-            primaryTitle: item.primaryActionTitle,
-            adjustOptions: adjustOptions ?? [],
-            onDismiss: onDismiss,
-            onPrimary: onPrimaryAction,
-            onAdjust: onAdjust
-        )
-        .padding(.top, DexterSpacing.sm)
-    }
-
     private var compactActionRow: some View {
         HStack(spacing: DexterSpacing.sm) {
-            Button(action: onPrimaryAction) {
+            Button(action: performAccept) {
                 Text(item.primaryActionTitle)
                     .font(DexterTypography.metadata())
                     .foregroundColor(DexterSurfaceColors.textPrimary)
@@ -221,15 +232,15 @@ struct DexterSuggestionCard: View {
                     .padding(.vertical, DexterSpacing.sm)
                     .background(
                         Capsule()
-                            .fill((profile?.accentColor ?? DexterSurfaceColors.accent).opacity(0.22))
+                            .fill(categoryTint.opacity(0.22))
                     )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(DexterSuggestionPillButtonStyle())
             .pointerCursor()
 
             if let onSecondaryAction, let secondaryTitle = secondaryActionTitle {
                 Button(secondaryTitle, action: onSecondaryAction)
-                    .buttonStyle(.plain)
+                    .buttonStyle(DexterSuggestionPillButtonStyle())
                     .font(DexterTypography.metadata())
                     .foregroundColor(DexterSurfaceColors.textMuted)
                     .pointerCursor()
@@ -251,26 +262,46 @@ struct DexterSuggestionCard: View {
         return "Dismiss"
     }
 
-    private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: DexterRadii.card, style: .continuous)
-            .fill(DexterPastelColors.suggestionSurface(for: item.accentIndex).opacity(0.28))
+    private func performAccept() {
+        guard !isExiting else { return }
+        if DexterMotionPreferences.shouldReduceMotion {
+            onPrimaryAction()
+            return
+        }
+        showsAcceptFlash = true
+        withAnimation(DexterSuggestionMotion.exitEase) {
+            isExiting = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.38) {
+            onPrimaryAction()
+        }
     }
 
-    private var cardBorder: some View {
-        RoundedRectangle(cornerRadius: DexterRadii.card, style: .continuous)
-            .stroke(
-                item.isUnread ? (profile?.accentColor.opacity(0.45) ?? DexterSurfaceColors.border) : DexterSurfaceColors.border.opacity(0.55),
-                lineWidth: 1
+    private func performDismiss() {
+        guard !isExiting else { return }
+        if DexterMotionPreferences.shouldReduceMotion {
+            onDismiss()
+            return
+        }
+        withAnimation(DexterSuggestionMotion.exitEase) {
+            isExiting = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) {
+            onDismiss()
+        }
+    }
+}
+
+struct DexterSuggestionPillButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .brightness(configuration.isPressed ? -0.03 : (configuration.isPressed ? 0 : 0))
+            .animation(
+                DexterMotionPreferences.shouldReduceMotion
+                    ? nil
+                    : .easeOut(duration: 0.14),
+                value: configuration.isPressed
             )
-    }
-
-    private var heroCardBackground: some View {
-        RoundedRectangle(cornerRadius: DexterRadii.card, style: .continuous)
-            .fill(DexterSurfaceColors.surfaceElevated.opacity(0.92))
-    }
-
-    private var heroCardBorder: some View {
-        RoundedRectangle(cornerRadius: DexterRadii.card, style: .continuous)
-            .stroke(DexterSurfaceColors.border.opacity(0.4), lineWidth: 1)
     }
 }

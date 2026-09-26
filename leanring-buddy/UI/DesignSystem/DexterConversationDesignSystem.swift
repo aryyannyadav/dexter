@@ -70,14 +70,15 @@ enum DexterAvatarSize {
 enum DexterMessageMetrics {
     static let compactMaxWidthRatio: CGFloat = 0.52
     static let regularMaxWidthRatio: CGFloat = 0.62
-    static let userBubbleAbsoluteMaxWidth: CGFloat = 380
+    static let userBubbleAbsoluteMaxWidth: CGFloat = 560
     static let assistantBubbleAbsoluteMaxWidth: CGFloat = 560
-    static let horizontalPadding: CGFloat = DexterSpacing.md
-    static let verticalPadding: CGFloat = DexterSpacing.sm + 2
+    static let horizontalPadding: CGFloat = 16
+    static let verticalPadding: CGFloat = 10
+    static let bubbleCornerRadius: CGFloat = 18
     static let tailSize: CGFloat = 6
-    static let avatarToBubbleGap: CGFloat = DexterSpacing.sm
+    static let avatarToBubbleGap: CGFloat = 10
     /// Within-group spacing (same speaker, short window).
-    static let intraGroupSpacing: CGFloat = 3
+    static let intraGroupSpacing: CGFloat = 5
 }
 
 // MARK: - Composer / voice pill (visual only; STT unchanged)

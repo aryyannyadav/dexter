@@ -29,14 +29,15 @@ enum DexterActionExecutionPipeline {
         actionStore: DexterActionStore,
         actionHistoryStore: DexterActionHistoryStore,
         actionPermissionSettings: DexterActionPermissionSettings,
-        isComputerControlAuthorizedForSession: Bool = false,
+        actionPermissionSettingsStore: DexterActionPermissionSettingsStore? = nil,
         hasPersistedScreenContentGrant: Bool,
         confirmationGrant: DexterActionConfirmationGrant? = nil,
         demonstrationPhaseStore: DexterDemonstrationPhaseStore? = nil,
         executionStateMachine: DexterExecutionStateMachine? = nil,
         executionStateMachineRegistry: DexterExecutionStateMachineRegistry? = nil,
         parentTaskIdentifier: UUID? = nil,
-        actionRecoveryLedger: DexterActionRecoveryLedger? = nil
+        actionRecoveryLedger: DexterActionRecoveryLedger? = nil,
+        uiTargetVisionProvider: VisionProvider? = nil
     ) async -> DexterActionExecutionOutcome {
         let stateMachine = executionStateMachine
             ?? DexterExecutionStateMachine(
@@ -46,6 +47,32 @@ enum DexterActionExecutionPipeline {
         executionStateMachineRegistry?.register(stateMachine)
 
         var action = proposedAction.withState(.proposed)
+
+        if DexterUserInterfaceDestinationActionPreparer.isSemanticUserInterfaceDestinationAction(action) {
+            let preparationResult = await DexterUserInterfaceDestinationActionPreparer.prepareResolvedClickAction(
+                proposedAction: action,
+                dexterContext: context,
+                permissionManager: permissionManager,
+                hasPersistedScreenContentGrant: hasPersistedScreenContentGrant,
+                contextObserver: contextObserver,
+                visionProvider: uiTargetVisionProvider
+            )
+            switch preparationResult {
+            case .success(let resolvedAction):
+                action = resolvedAction.withState(.proposed)
+            case .failure(let preparationFailure):
+                let userMessage = DexterUserInterfaceDestinationActionPreparer.userFacingMessage(for: preparationFailure)
+                DexterObservabilityLog.verify("error_type=TARGET_RESOLUTION_FAILED")
+                return failOutcome(
+                    action: action.withState(.failed),
+                    stateMachine: stateMachine,
+                    actionStore: actionStore,
+                    message: userMessage,
+                    machineError: nil
+                )
+            }
+        }
+
         actionStore.register(action)
 
         let safetyEnvelope = DexterExecutionSafetyEnvelope.standard
@@ -123,13 +150,23 @@ enum DexterActionExecutionPipeline {
 
         let observationBeforeConfirmation = DexterActionObservationSnapshot.from(context: context)
 
-        if DexterActionConfirmationPolicy.requiresUserConfirmation(
+        let isComputerControlAuthorizedForSession = actionPermissionSettingsStore.map {
+            DexterComputerControlAuthorization.isUserAuthorized(store: $0)
+        } ?? false
+        let requiresApproval = DexterActionConfirmationPolicy.requiresUserConfirmation(
             action: action,
             settings: actionPermissionSettings,
             confirmationGrant: confirmationGrant,
             observationBefore: observationBeforeConfirmation,
             isComputerControlAuthorizedForSession: isComputerControlAuthorizedForSession
-        ) {
+        )
+
+        DexterActionDiagnosticLog.permission(
+            "storedAuthorization=\(isComputerControlAuthorizedForSession ? "authorized" : "notDetermined") requiresApproval=\(requiresApproval) actionRisk=\(resolvedRiskLevel.rawValue)"
+        )
+
+        if requiresApproval {
+            DexterActionDiagnosticLog.permission("confirmationRequired=true")
             action = action.withState(.awaitingConfirmation)
             actionStore.update(action)
             let confirmationContent = DexterActionConfirmationContentBuilder.build(action: action, context: context)
@@ -180,15 +217,26 @@ enum DexterActionExecutionPipeline {
             actionStore.update(action)
             actionHistoryStore.recordAction(actionIdentifier: action.type.rawValue, summary: permissionDecision.message)
             DexterActionDiagnosticLog.permission("refused reason=\(permissionDecision.message)")
-            DexterObservabilityLog.permission("outcome=PERMISSION_DENIED reason=\(permissionDecision.message)")
+            let permissionOutcome = DexterActionPermissionFailureClassifier.observabilityOutcome(
+                action: action,
+                permissionDecision: permissionDecision
+            )
+            DexterObservabilityLog.permission("outcome=\(permissionOutcome.rawValue) reason=\(permissionDecision.message)")
+            if permissionOutcome == .targetResolutionFailed || permissionOutcome == .invalidActionArgument {
+                DexterObservabilityLog.error("type=\(permissionOutcome.rawValue)")
+            }
             do {
                 try stateMachine.fail(code: "permission_denied", message: permissionDecision.message)
             } catch {
                 // Permission refusal maps to FAILED from planning or waiting permission.
             }
+            let userFacingPermissionMessage = DexterActionPermissionFailureClassifier.userFacingMessage(
+                action: action,
+                permissionDecision: permissionDecision
+            )
             return DexterActionExecutionOutcome(
                 action: action,
-                spokenSummary: permissionDecision.message,
+                spokenSummary: userFacingPermissionMessage,
                 pendingConfirmation: nil,
                 verificationReport: nil,
                 turnRecord: nil,
@@ -246,7 +294,13 @@ enum DexterActionExecutionPipeline {
 
         DexterActionDiagnosticLog.permission("approved")
         let agentRequest = DexterActionAgentRequestMapper.agentActionRequest(for: action)
-        if let targetApplicationName = agentRequest.parameters["applicationName"] {
+        if let uiDestination = action.parameters["uiDestination"]?.nonEmptyTrimmedValue
+            ?? action.parameters["elementRef"]?.nonEmptyTrimmedValue {
+            let parentApplication = action.parameters["parentApplicationName"]?.nonEmptyTrimmedValue ?? "frontmost"
+            DexterActionDiagnosticLog.intent(
+                "type=navigate application=\(parentApplication) target=\(uiDestination)"
+            )
+        } else if let targetApplicationName = agentRequest.parameters["applicationName"] {
             DexterActionDiagnosticLog.intent("type=\(agentRequest.actionIdentifier) target=\(targetApplicationName)")
             DexterActionDiagnosticLog.plan("runtime=OpenClaw command=computer.act")
             DexterActionDiagnosticLog.action("id=\(action.id.uuidString.prefix(8)) intent=\(agentRequest.actionIdentifier) target=\(targetApplicationName)")
